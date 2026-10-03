@@ -153,14 +153,16 @@ public enum GmshDriver {
             g += "bb() = BoundingBox Volume{v()};\n"
             if external {
                 let p = pad.count == 6 ? pad : [3, 6, 3, 3, 3, 3]
+                // box extents as plain variables: the Boolean renumbers volumes, so never query the box by tag
                 g += """
                 lx = bb(3)-bb(0); ly = bb(4)-bb(1); lz = bb(5)-bb(2); Lr = Max(lx, Max(ly, lz));
-                Box(1000) = {bb(0)-\(p[0])*Lr, bb(1)-\(p[2])*Lr, bb(2)-\(p[4])*Lr, lx+(\(p[0])+\(p[1]))*Lr, ly+(\(p[2])+\(p[3]))*Lr, lz+(\(p[4])+\(p[5]))*Lr};
+                X0 = bb(0)-\(p[0])*Lr; X1 = bb(3)+\(p[1])*Lr;
+                Y0 = bb(1)-\(p[2])*Lr; Y1 = bb(4)+\(p[3])*Lr;
+                Z0 = bb(2)-\(p[4])*Lr; Z1 = bb(5)+\(p[5])*Lr;
+                Box(1000) = {X0, Y0, Z0, X1-X0, Y1-Y0, Z1-Z0};
                 BooleanDifference{ Volume{1000}; Delete; }{ Volume{v()}; Delete; }
-                ob() = BoundingBox Volume{1000};
-                inlet() = Surface In BoundingBox{ob(0)-eps, ob(1)-eps, ob(2)-eps, \(a == "x" ? "ob(0)" : "ob(3)")+eps, \(a == "y" ? "ob(1)" : "ob(4)")+eps, \(a == "z" ? "ob(2)" : "ob(5)")+eps};
-                outlet() = Surface In BoundingBox{\(a == "x" ? "ob(3)" : "ob(0)")-eps, \(a == "y" ? "ob(4)" : "ob(1)")-eps, \(a == "z" ? "ob(5)" : "ob(2)")-eps, ob(3)+eps, ob(4)+eps, ob(5)+eps};
-                boxAll() = Surface In BoundingBox{ob(0)-eps, ob(1)-eps, ob(2)-eps, ob(3)+eps, ob(4)+eps, ob(5)+eps};
+                inlet() = Surface In BoundingBox{X0-eps, Y0-eps, Z0-eps, \(a == "x" ? "X0" : "X1")+eps, \(a == "y" ? "Y0" : "Y1")+eps, \(a == "z" ? "Z0" : "Z1")+eps};
+                outlet() = Surface In BoundingBox{\(a == "x" ? "X1" : "X0")-eps, \(a == "y" ? "Y1" : "Y0")-eps, \(a == "z" ? "Z1" : "Z0")-eps, X1+eps, Y1+eps, Z1+eps};
                 body() = Surface In BoundingBox{bb(0)-eps, bb(1)-eps, bb(2)-eps, bb(3)+eps, bb(4)+eps, bb(5)+eps};
                 farfield() = Surface{:};
                 farfield() -= body();

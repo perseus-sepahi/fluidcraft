@@ -69,6 +69,9 @@ public enum TutorialCatalog {
             let (m, s, _) = try Benchmarks.sodCase(cells: 400)
             return (m, s)
         },
+        Tutorial(id: "cad-sphere", title: "STEP Import: Flow Around a Sphere (Re = 100)",
+                 summary: "CAD workflow: a STEP sphere is enclosed in a box, named selections are assigned automatically and Gmsh builds the tetrahedral mesh.",
+                 needsGmsh: true, suggestedField: "velocity-magnitude") { try cadSphere() },
         Tutorial(id: "pipe", title: "Laminar Pipe Flow (3D, Re = 100)",
                  summary: "Gmsh tetrahedral pipe; developing flow and pressure drop vs Hagen-Poiseuille.",
                  needsGmsh: true, suggestedField: "velocity-magnitude") { try pipe() },
@@ -223,6 +226,38 @@ public enum TutorialCatalog {
         // airfoil boundary layers develop long after the potential-flow start: converge tightly
         s.residuals.continuity = 1e-6; s.residuals.velocity = 1e-7; s.residuals.turbulence = 1e-7
         s.run.iterations = 4000
+        return (mesh, s)
+    }
+
+    /// Writes a STEP sphere with Gmsh/OpenCASCADE, then runs the CAD (external-flow) meshing template on it.
+    static func cadSphere() throws -> (Mesh, CaseSetup) {
+        guard let exe = GmshDriver.executable else { throw SolverError("Gmsh not found") }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("curlew-sphere-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try "SetFactory(\"OpenCASCADE\");\nSphere(1) = {0, 0, 0, 0.5};\nSave \"sphere.step\";\n".write(to: dir.appendingPathComponent("sphere.geo"), atomically: true, encoding: .utf8)
+        let p = Process()
+        p.executableURL = exe
+        p.arguments = ["sphere.geo", "-0", "-nopopup"]
+        p.currentDirectoryURL = dir
+        p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
+        try p.run(); p.waitUntilExit()
+        var ms = MeshingSettings(template: .cad(path: dir.appendingPathComponent("sphere.step").path, external: true, flowAxis: 0, padding: [3, 8, 3, 3, 3, 3]))
+        ms.maxSize = 0.5; ms.wallSize = 0.04; ms.growthDistance = 1.5
+        let mesh = try GmshDriver.generate(ms).mesh
+        var s = CaseSetup()
+        s.title = "Sphere Re=100 (STEP import)"
+        s.models.viscous = .laminar
+        var fluid = Material(name: "sphere-fluid"); fluid.density = 1; fluid.viscosity = 0.01
+        s.adopt(mesh: mesh); setMaterial(&s, fluid)
+        var inlet = BoundarySettings(type: .velocityInlet); inlet.velocityMagnitude = 1
+        s.boundaries["inlet"] = inlet
+        s.boundaries["farfield"] = BoundarySettings(type: .symmetry)
+        s.methods.coupling = .simplec; s.controls.urf.pressure = 1
+        s.reference.velocity = 1; s.reference.density = 1; s.reference.area = Double.pi * 0.25; s.reference.length = 1
+        var cd = ReportDefinition(name: "cd", kind: .dragCoefficient); cd.zones = ["body"]
+        s.reports = [cd]
+        s.residuals.continuity = 1e-5; s.residuals.velocity = 1e-6
+        s.run.iterations = 1500
         return (mesh, s)
     }
 

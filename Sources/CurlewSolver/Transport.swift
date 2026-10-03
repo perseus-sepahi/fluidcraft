@@ -76,6 +76,7 @@ struct TransportEquation {
 
 struct TransportAssembler {
     let geo: FVGeometry
+    var nonOrthLimit: Double = 1
 
     /// Assemble A phi = b. Returns the scaled residual (Fluent definition) of the unrelaxed system.
     func assemble(_ e: inout TransportEquation, flux: [Double], A: SparseMatrix, b: inout [Double]) -> (res: Double, norm: Double) {
@@ -84,7 +85,8 @@ struct TransportAssembler {
         A.zero()
         if b.count != nC { b = [Double](repeating: 0, count: nC) } else { for i in 0..<nC { b[i] = 0 } }
         let diag = geo.pattern.diag
-        let nonOrth = geo.hasNonOrthogonality
+        let nonOrth = geo.hasNonOrthogonality && nonOrthLimit > 0
+        let psi = nonOrthLimit
         A.values.withUnsafeMutableBufferPointer { V in
             for f in 0..<nI {
                 let P = Int(m.owner[f]), N = Int(m.neighbour[f])
@@ -106,7 +108,7 @@ struct TransportAssembler {
                 if nonOrth {
                     let w = geo.weight[f]
                     let gf = w * e.grad[P] + (1 - w) * e.grad[N]
-                    let c = e.gamma[f] * dot(gf, geo.nonOrth[f])
+                    let c = FVGeometry.limitCorrection(e.gamma[f] * dot(gf, geo.nonOrth[f]), orthogonal: dif * (e.phi[N] - e.phi[P]), psi: psi)
                     b[P] += c; b[N] -= c
                 }
             }

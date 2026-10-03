@@ -383,6 +383,55 @@ case "bench-solver":
         print(String(format: "%@ pressure solver: %d cells, %d iterations in %.2f s (%.1f ms/iteration)  continuity %.4e  x-velocity %.4e",
                      gpu ? "GPU" : "CPU", mesh.nCells, its, dt, 1000 * dt / Double(its), last["continuity"] ?? 0, last["x-velocity"] ?? 0))
     }
+case "mesh-cad":
+    guard args.count > 1 else { fail("mesh-cad <file.step> [--internal] [--axis 0] [--max-size 0.2] [--wall-size 0.05]") }
+    var ms = MeshingSettings(template: .cad(path: args[1], external: !args.contains("--internal"), flowAxis: Int(option("--axis", "0"))!, padding: [3, 8, 3, 3, 3, 3]))
+    ms.maxSize = Double(option("--max-size", "0.4"))!
+    ms.wallSize = Double(option("--wall-size", "0.05"))!
+    ms.growthDistance = Double(option("--growth", "1.5"))!
+    let t0 = Date()
+    let r = try GmshDriver.generate(ms)
+    print("Gmsh CAD mesh in \(String(format: "%.1f", Date().timeIntervalSince(t0))) s: \(r.mesh.summary)")
+    print("  shapes \(r.mesh.cellShapeHistogram())")
+    for z in r.mesh.boundaryZones { print("  zone \(z.name) [\(z.kind.rawValue)] \(z.count) faces") }
+    print(MeshQuality.report(r.mesh).text)
+    if args.contains("--solve") {
+        var s = CaseSetup()
+        s.models.viscous = .laminar
+        var f = Material(name: "f"); f.density = 1; f.viscosity = 0.01   // Re = 100 on a unit-diameter sphere
+        s.materials.append(f); s.adopt(mesh: r.mesh); for k in s.cellZones.keys { s.cellZones[k]!.material = "f" }
+        var inlet = BoundarySettings(type: .velocityInlet); inlet.velocityMagnitude = 1
+        s.boundaries["inlet"] = inlet
+        var ff = BoundarySettings(type: .symmetry); s.boundaries["farfield"] = ff; ff.type = .symmetry
+        s.methods.coupling = .simplec; s.controls.urf.pressure = 1
+        if let sch = ConvectionScheme(rawValue: option("--mom-scheme", "")) { s.methods.momentum = sch }
+        if let g = GradientScheme(rawValue: option("--gradient", "")) { s.methods.gradient = g }
+        if let v = Double(option("--urf-u", "")) { s.controls.urf.momentum = v }
+        if let v = Double(option("--nonorth", "")) { s.methods.nonOrthogonalLimit = v }
+        if let pi = PressureInterpolation(rawValue: option("--pressure", "")) { s.methods.pressure = pi }
+        s.reference.velocity = 1; s.reference.density = 1; s.reference.area = Double.pi * 0.25
+        var cd = ReportDefinition(name: "cd", kind: .dragCoefficient); cd.zones = ["body"]
+        s.reports = [cd]
+        s.residuals.continuity = 1e-5; s.residuals.velocity = 1e-6
+        let solver = try PressureBasedSolver(mesh: r.mesh, setup: s)
+        solver.log = { _ in }
+        try solver.initialize()
+        let t1 = Date()
+        var lastU = solver.state.u
+        let res = solver.run(iterations: Int(option("--iterations", "1500"))!) { s, rr in
+            if s.iteration % 250 == 0 {
+                print(s.formatResiduals(rr))
+                var du = 0.0, worst = 0
+                for c in 0..<s.mesh.nCells { let d = norm(s.state.u[c] - lastU[c]); if d > du { du = d; worst = c } }
+                lastU = s.state.u
+                let wc = s.mesh.cellCentres[worst]
+                var nb = 0, wallFaces = 0
+                for k in s.mesh.cellFaceRange(worst) { let f = Int(s.mesh.cellFaces[k]); if f >= s.mesh.nInternalFaces { wallFaces += 1 } else { nb += 1 } }
+                print(String(format: "      worst cell %d at (%.3f, %.3f, %.3f) |u| %.3f du %.3e vol %.2e boundary faces %d, OQ %.3f", worst, wc.x, wc.y, wc.z, norm(s.state.u[worst]), du, s.mesh.cellVolumes[worst], wallFaces, MeshQuality.orthogonalQuality(s.mesh)[worst]))
+            }
+        }
+        print("iterations \(res.iterations) converged \(res.converged) in \(String(format: "%.1f", Date().timeIntervalSince(t1))) s; Cd = \(String(format: "%.4f", Reports.evaluate(s.reports[0], solver: solver))) (Re=100 sphere: ~1.09)")
+    }
 case "mesh-info":
     guard args.count > 1 else { fail("mesh-info <file>") }
     let mesh = try MeshIO.read(url: URL(fileURLWithPath: args[1]))

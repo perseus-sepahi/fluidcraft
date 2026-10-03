@@ -259,6 +259,10 @@ public struct SolutionMethods: Codable, Sendable, Equatable {
     /// viscosity. It changes typical RANS results by well under 1 % but slows convergence of
     /// separated flows; it is always included for variable molecular viscosity.
     public var transposeStress = false
+    /// Non-orthogonal correction limiter psi (OpenFOAM "limited corrected"): the explicit
+    /// correction is capped at psi/(1-psi) times the orthogonal part. 1 = fully corrected,
+    /// 0 = uncorrected; nil = automatic from the mesh's maximum non-orthogonality.
+    public var nonOrthogonalLimit: Double? = nil
     /// PISO neighbour corrections.
     public var pisoCorrectors = 1
     // Density-based

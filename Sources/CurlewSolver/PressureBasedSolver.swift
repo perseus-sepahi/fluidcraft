@@ -75,6 +75,7 @@ public final class PressureBasedSolver: @unchecked Sendable {
     var _locator: CellLocator? = nil
     /// Conservative variables when the density-based solver is selected.
     var densityState: DensityBasedState? = nil
+    var _resistiveCells: [Int]? = nil
     public var isDensityBased: Bool { setup.general.solver == .densityBased }
 
     public var iteration: Int { state.iteration }
@@ -272,7 +273,7 @@ public final class PressureBasedSolver: @unchecked Sendable {
     /// Update boundary face values of velocity and pressure from cell values.
     func updateFlowBoundaries() {
         let nI = geo.nInternal
-        let second = setup.methods.pressure != .standard
+        let second = setup.methods.pressure == .secondOrder
         let g = gravity
         let bfw = setup.methods.pressure == .bodyForceWeighted && g != .zero
         let rhoOp = bfw ? operatingDensity() : 0
@@ -314,7 +315,20 @@ public final class PressureBasedSolver: @unchecked Sendable {
 
     @inline(__always) func extrapolatedPressure(_ P: Int, _ d: Vec3, second: Bool, bfw: Bool, rhoOp: Double, g: Vec3) -> Double {
         if bfw { return state.p[P] + buoyancyDensity(P, rhoOp: rhoOp) * dot(g, d) }
-        return second ? state.p[P] + dot(gradP[P], d) : state.p[P]
+        guard second else { return state.p[P] }
+        // Second-order extrapolation, limited to the range of the interior neighbours. On thin
+        // wall cells (tetrahedra) the least-squares wall-normal gradient is dominated by the
+        // boundary value itself; without the limit the extrapolation feeds back on itself.
+        let pP = state.p[P]
+        var lo = 0.0, hi = 0.0
+        for k in mesh.cellFaceRange(P) {
+            let f = Int(mesh.cellFaces[k])
+            guard f < geo.nInternal else { continue }
+            let n = Int(mesh.owner[f]) == P ? Int(mesh.neighbour[f]) : Int(mesh.owner[f])
+            let dp = state.p[n] - pP
+            lo = min(lo, dp); hi = max(hi, dp)
+        }
+        return pP + min(max(dot(gradP[P], d), lo), hi)
     }
 
     // MARK: Initialization
@@ -332,10 +346,9 @@ public final class PressureBasedSolver: @unchecked Sendable {
 
     func computeGradients() {
         let scheme = setup.methods.gradient
-        if setup.methods.pressure == .standard && aP.count == mesh.nCells {
-            momentumWeightedPressureGradient()
-        } else {
-            Gradient.compute(geo, state.p, boundary: state.bP, scheme: scheme, into: &gradP)
+        Gradient.compute(geo, state.p, boundary: state.bP, scheme: scheme, into: &gradP)
+        if setup.methods.pressure == .standard && aP.count == mesh.nCells && !resistiveCells.isEmpty {
+            momentumWeightedPressureGradient(cells: resistiveCells)
         }
         Gradient.compute(geo, state.u, boundary: state.bU, scheme: scheme, into: &gradU, scratch: &scratch, scratchB: &scratchB)
     }
@@ -354,7 +367,23 @@ public final class PressureBasedSolver: @unchecked Sendable {
     /// weighted by the momentum coefficients, p_f = (p_P/a_P + p_N/a_N) / (1/a_P + 1/a_N).
     /// It puts pressure kinks (porous media, strong body forces) exactly at the faces where
     /// the resistance changes, which removes spurious velocity spikes there.
-    func momentumWeightedPressureGradient() {
+    /// Porous cells and their face neighbours: where the momentum-weighted gradient is applied.
+    var resistiveCells: [Int] {
+        if let r = _resistiveCells { return r }
+        var mark = [Bool](repeating: false, count: mesh.nCells)
+        for c in 0..<mesh.nCells where zoneSettings[Int(mesh.cellZone[c])].porous != nil {
+            mark[c] = true
+            for k in mesh.cellFaceRange(c) {
+                let f = Int(mesh.cellFaces[k])
+                if f < mesh.nInternalFaces { mark[Int(mesh.owner[f])] = true; mark[Int(mesh.neighbour[f])] = true }
+            }
+        }
+        let r = mark.indices.filter { mark[$0] }
+        _resistiveCells = r
+        return r
+    }
+
+    func momentumWeightedPressureGradient(cells: [Int]) {
         let m = mesh, g = geo
         let nI = g.nInternal
         let p = state.p, bP = state.bP, a = aP
@@ -362,8 +391,9 @@ public final class PressureBasedSolver: @unchecked Sendable {
         if gradP.count != m.nCells { gradP = [Vec3](repeating: .zero, count: m.nCells) }
         gradP.withUnsafeMutableBufferPointer { gp in
             let G = SharedPtr(gp.baseAddress!)
-            Parallel.forEach(m.nCells) { range in
-                for c in range {
+            Parallel.forEach(cells.count) { range in
+                for ci in range {
+                    let c = cells[ci]
                     var s = Vec3.zero
                     for k in m.cellFaceRange(c) {
                         let f = Int(m.cellFaces[k])
@@ -415,6 +445,7 @@ public final class PressureBasedSolver: @unchecked Sendable {
         let turbulent = zoneMaterial.contains { $0.viscosityMethod != .constant } ||
             (setup.models.viscous.isTurbulent && setup.methods.transposeStress)
         let nonOrth = g.hasNonOrthogonality
+        let psi = setup.methods.nonOrthogonalLimit ?? g.automaticNonOrthogonalLimit
         let grav = gravity
         let rhoOp = grav != .zero ? operatingDensity() : 0
         let flux = state.massFlux
@@ -457,9 +488,12 @@ public final class PressureBasedSolver: @unchecked Sendable {
                     let g0 = w * gU0[P] + (1 - w) * gU0[N]
                     let g1 = w * gU1[P] + (1 - w) * gU1[N]
                     let g2 = w * gU2[P] + (1 - w) * gU2[N]
-                    if nonOrth {
+                    if nonOrth && psi > 0 {
                         let T = g.nonOrth[f]
-                        expl += mu * Vec3(dot(g0, T), dot(g1, T), dot(g2, T))
+                        let uP = u[P], uN = u[N]
+                        expl += Vec3(FVGeometry.limitCorrection(mu * dot(g0, T), orthogonal: dif * (uN.x - uP.x), psi: psi),
+                                     FVGeometry.limitCorrection(mu * dot(g1, T), orthogonal: dif * (uN.y - uP.y), psi: psi),
+                                     FVGeometry.limitCorrection(mu * dot(g2, T), orthogonal: dif * (uN.z - uP.z), psi: psi))
                     }
                     EX[f] = expl
                     if turbulent {
@@ -943,7 +977,7 @@ public final class PressureBasedSolver: @unchecked Sendable {
         var eq = TransportEquation(phi: state.T, bPhi: state.bT, grad: gradT, gamma: gamma, convScale: cpF,
                                    scheme: setup.methods.energy, bounded: setup.methods.limitMomentum, bc: bc.thermal,
                                    Su: Su, Sp: Sp, relax: setup.controls.urf.energy)
-        let asm = TransportAssembler(geo: g)
+        let asm = TransportAssembler(geo: g, nonOrthLimit: setup.methods.nonOrthogonalLimit ?? g.automaticNonOrthogonalLimit)
         var b = [Double](repeating: 0, count: nC)
         let (raw, nrm) = asm.assemble(&eq, flux: state.massFlux, A: A, b: &b)
         var x = state.T
@@ -995,7 +1029,7 @@ public final class PressureBasedSolver: @unchecked Sendable {
                                        scheme: setup.methods.scalars, bounded: true, bc: bc.scalars[si],
                                        Su: Su, Sp: Sp, relax: setup.controls.urf.scalars,
                                        fixedMask: fixed, fixedValue: fixed == nil ? nil : [Double](repeating: 0, count: nC))
-            let asm = TransportAssembler(geo: g)
+            let asm = TransportAssembler(geo: g, nonOrthLimit: setup.methods.nonOrthogonalLimit ?? g.automaticNonOrthogonalLimit)
             var b = [Double](repeating: 0, count: nC)
             let (raw, nrm) = asm.assemble(&eq, flux: state.massFlux, A: A, b: &b)
             var x = state.scalars[si]

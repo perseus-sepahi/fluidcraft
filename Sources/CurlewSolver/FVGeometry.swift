@@ -23,6 +23,8 @@ public final class FVGeometry: @unchecked Sendable {
     public let isEmptyFace: [Bool]
     /// Max non-orthogonality flag: skip explicit corrections on orthogonal meshes.
     public let hasNonOrthogonality: Bool
+    /// Maximum angle (degrees) between face normal and cell-centre vector over interior faces.
+    public let maxNonOrthogonality: Double
     public let pattern: SparsePattern
     public let upper: [Int32]
     public let lower: [Int32]
@@ -68,6 +70,12 @@ public final class FVGeometry: @unchecked Sendable {
         }
         weight = w; delta = d; orthCoeff = oc; nonOrth = no; isEmptyFace = empty
         hasNonOrthogonality = maxT > 1e-6
+        var mx = 0.0
+        for f in 0..<nInternal {
+            let c = dot(m.faceAreas[f], d[f]) / max(m.faceAreaMag[f] * norm(d[f]), 1e-300)
+            mx = max(mx, acos(max(-1, min(1, c))) * 180 / .pi)
+        }
+        maxNonOrthogonality = mx
 
         // Least squares: G = sum w d d^T with w = 1/|d|^2, including boundary faces.
         var G = [SymTensor](repeating: SymTensor(), count: nCells)
@@ -100,6 +108,19 @@ public final class FVGeometry: @unchecked Sendable {
 
         let (pat, up, low) = SparsePattern.fromPairs(n: nCells, owner: m.owner, neighbour: m.neighbour)
         pattern = pat; upper = up; lower = low
+    }
+
+    /// Automatic non-orthogonal limiter from the mesh (OpenFOAM practice).
+    public var automaticNonOrthogonalLimit: Double {
+        maxNonOrthogonality < 50 ? 1 : (maxNonOrthogonality < 70 ? 0.5 : 0.333)
+    }
+
+    /// Limit an explicit non-orthogonal correction relative to the implicit orthogonal flux.
+    @inline(__always) public static func limitCorrection(_ corr: Double, orthogonal: Double, psi: Double) -> Double {
+        if psi >= 1 { return corr }
+        if psi <= 0 { return 0 }
+        let cap = psi / (1 - psi) * abs(orthogonal)
+        return abs(corr) > cap ? (corr > 0 ? cap : -cap) : corr
     }
 
     /// Normal distance between owner centre and boundary face (S.d/|S|).

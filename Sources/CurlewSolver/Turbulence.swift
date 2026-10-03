@@ -189,7 +189,7 @@ extension PressureBasedSolver {
     func solveScalarEquation(_ eq: inout TransportEquation, floor: Double) -> (values: [Double], boundary: [Double], residual: Double) {
         eq.positive = true
         eq.floor = max(floor, 1e-30)
-        let asm = TransportAssembler(geo: geo)
+        let asm = TransportAssembler(geo: geo, nonOrthLimit: setup.methods.nonOrthogonalLimit ?? geo.automaticNonOrthogonalLimit)
         var b = [Double](repeating: 0, count: mesh.nCells)
         let (raw, nrm) = asm.assemble(&eq, flux: state.massFlux, A: A, b: &b)
         var x = eq.phi
