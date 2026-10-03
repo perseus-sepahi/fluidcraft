@@ -16,8 +16,17 @@ guard let cmd = args.first else {
     print("""
     curlew-cli — Curlew CFD batch interface
 
-      validate cavity --re 100 --cells 64
+      run <case.json> --mesh <file> [--iterations N] [--save out.curlew] [--vtu out.vtu] [--gpu]
+      run <case.curlew> [--continue] [--iterations N] [--save out.curlew] [--vtu out.vtu]
+      tutorial <id> [--iterations N] [--vtu out.vtu] [--export-foam dir]
+      validate <cavity|natural-convection|flat-plate|cylinder|schafer-turek|sod|ramp> [options]
       mesh-info <mesh file>
+      mesh-cad <file.step> [--internal] [--axis 0|1|2] [--max-size h] [--wall-size h] [--solve]
+      export <case.curlew> [--foam dir] [--fluent-mesh out.msh]
+      bench-linear --n 100            CPU vs Metal GPU AMG on an n^3 Poisson problem
+      bench-solver --n 64             pressure-based iterations with/without GPU
+
+    Tutorials: \(TutorialCatalog.all.map(\.id).joined(separator: ", "))
     """)
     exit(0)
 }
@@ -432,6 +441,46 @@ case "mesh-cad":
         }
         print("iterations \(res.iterations) converged \(res.converged) in \(String(format: "%.1f", Date().timeIntervalSince(t1))) s; Cd = \(String(format: "%.4f", Reports.evaluate(s.reports[0], solver: solver))) (Re=100 sphere: ~1.09)")
     }
+case "run":
+    // Batch run of a case: a .curlew package, or a JSON case file plus --mesh <file>.
+    guard args.count > 1 else { fail("run <case.json|case.curlew> [--mesh file] [--iterations N] [--save out.curlew] [--vtu out.vtu] [--gpu] [--continue]") }
+    let input = URL(fileURLWithPath: args[1])
+    var mesh: Mesh
+    var setup: CaseSetup
+    var resume = false
+    if input.pathExtension == "curlew" {
+        let pkg = try CasePackage.read(input)
+        mesh = pkg.mesh; setup = pkg.setup; resume = pkg.hasData && args.contains("--continue")
+    } else {
+        setup = try CaseSetup.decodeLenient(Data(contentsOf: input))
+        let meshPath = option("--mesh", "")
+        guard !meshPath.isEmpty else { fail("a JSON case needs --mesh <file> (Fluent .msh, Gmsh .msh, OpenFOAM case dir or .crlmesh)") }
+        mesh = try MeshIO.read(url: URL(fileURLWithPath: meshPath))
+    }
+    if let n = Int(option("--iterations", "")) { setup.run.iterations = n; setup.run.numberOfTimeSteps = n }
+    if args.contains("--gpu") { setup.controls.linear.useGPU = true }
+    print("Curlew batch: \(setup.title) — \(mesh.summary)")
+    let solver = try PressureBasedSolver(mesh: mesh, setup: setup)
+    solver.log = { print($0) }
+    if resume { try CasePackage.restore(input, into: solver); print("Continuing from iteration \(solver.iteration)") }
+    else { try solver.initialize() }
+    let t0 = Date()
+    let r = solver.run()
+    print(String(format: "Done: %d iterations, converged %@, %.1f s", r.iterations, r.converged ? "yes" : "no", Date().timeIntervalSince(t0)))
+    for rep in solver.setup.reports { print(String(format: "  %@ = %.8g", rep.name, Reports.evaluate(rep, solver: solver))) }
+    let save = option("--save", "")
+    if !save.isEmpty { try CasePackage.write(to: URL(fileURLWithPath: save), mesh: mesh, setup: solver.setup, solver: solver); print("Wrote \(save)") }
+    let vtu = option("--vtu", "")
+    if !vtu.isEmpty { try VTKExport.write(solver: solver, to: URL(fileURLWithPath: vtu)); print("Wrote \(vtu)") }
+    if r.diverged { exit(2) }
+case "export":
+    // export <case.curlew> --foam dir | --fluent-mesh file.msh
+    guard args.count > 1 else { fail("export <case.curlew> [--foam dir] [--fluent-mesh out.msh]") }
+    let pkg = try CasePackage.read(URL(fileURLWithPath: args[1]))
+    let foam = option("--foam", "")
+    if !foam.isEmpty { try FoamCaseExporter.export(mesh: pkg.mesh, setup: pkg.setup, to: URL(fileURLWithPath: foam)); print("Wrote OpenFOAM case \(foam)") }
+    let fl = option("--fluent-mesh", "")
+    if !fl.isEmpty { try MeshWriters.fluentMesh(pkg.mesh).write(toFile: fl, atomically: true, encoding: .utf8); print("Wrote \(fl)") }
 case "mesh-info":
     guard args.count > 1 else { fail("mesh-info <file>") }
     let mesh = try MeshIO.read(url: URL(fileURLWithPath: args[1]))

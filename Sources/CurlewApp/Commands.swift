@@ -11,7 +11,8 @@ extension Workspace {
       help                                   this list
       /file/read-mesh <path>                 import a Fluent/Gmsh/OpenFOAM mesh
       /file/read-case <path.curlew>          open a case
-      /file/write-case                       save case & data
+      /file/write-case [path.curlew]         save case & data
+      /file/new-case                         clear the workspace
       /file/export-vtk <path.vtu>            write the solution for ParaView
       /mesh/check                            mesh statistics and quality
       /define/models/viscous <laminar|k-omega-sst|k-epsilon-standard|k-epsilon-realizable|spalart-allmaras>
@@ -30,6 +31,7 @@ extension Workspace {
       /surface/plane <name> <x|y|z> <value>  create a cut plane
       /display/set/surfaces <names...>       surfaces used by contours/vectors
       /plot/xy <field> x0 y0 z0 x1 y1 z1     XY plot along a line
+      /validate <keyword>                    run a validation benchmark (e.g. cavity, sod, ramp)
       /tutorial <id>                         \(TutorialCatalog.all.map(\.id).joined(separator: ", "))
     """
 
@@ -51,7 +53,10 @@ extension Workspace {
             guard let p = arg(0) else { log("usage: /file/read-case <path>", .warning); return }
             openCase(url: URL(fileURLWithPath: (p as NSString).expandingTildeInPath))
         case "/file/write-case", "/file/write-case-data":
+            if let p = arg(0) { documentURL = URL(fileURLWithPath: (p as NSString).expandingTildeInPath) }
             saveCase(as: false)
+        case "/file/new-case":
+            newCase()
         case "/file/export-vtk":
             guard let s = solver, initialized, let p = arg(0) else { log("usage: /file/export-vtk <path.vtu> (after initialization)", .warning); return }
             do { try VTKExport.write(solver: s, to: URL(fileURLWithPath: (p as NSString).expandingTildeInPath)); log("Wrote \(p)") } catch { log("\(error)", .error) }
@@ -160,6 +165,22 @@ extension Workspace {
             xyPlot = XYPlotData(title: f, xLabel: "Distance along line (m)", yLabel: f,
                                 series: [.init(name: f, points: pts.enumerated().map { XYPoint(id: $0.offset, x: $0.element.0, y: $0.element.1) })])
             graphicsTab = .xy
+        case "/validate":
+            let all = ValidationSuite.Case.allCases
+            let pick = arg(0).flatMap { a in all.first { $0.rawValue.lowercased().contains(a.lowercased()) } }
+            guard let c = pick else { log("cases: " + all.map(\.rawValue).joined(separator: " | "), .warning); return }
+            log("Validation: \(c.rawValue)", .command)
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let rows = try ValidationSuite.run(c) { line in DispatchQueue.main.async { self.log(line) } }
+                    DispatchQueue.main.async {
+                        for r in rows {
+                            self.validationResults.append(ValidationRow(name: r.benchmark, quantity: r.quantity, reference: r.reference, computed: r.computed, passed: r.passed))
+                            self.log("  \(r.passed ? "PASS" : "FAIL")  \(r.quantity): reference \(r.reference), Curlew \(r.computed)", r.passed ? .info : .warning)
+                        }
+                    }
+                } catch { DispatchQueue.main.async { self.log("\(error)", .error) } }
+            }
         case "/quit":
             NSApp.terminate(nil)
         case "/tutorial":

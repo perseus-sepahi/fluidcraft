@@ -70,19 +70,10 @@ extension Workspace {
         }
         guard let dir = url else { return }
         do {
-            let fm = FileManager.default
-            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-            try setup.encoded().write(to: dir.appendingPathComponent("case.json"))
-            try MeshIO.writeBinary(mesh).write(to: dir.appendingPathComponent("mesh.crlmesh"))
+            let withData = (initialized && !isRunning) ? solver : nil
+            try CasePackage.write(to: dir, mesh: mesh, setup: setup, solver: withData)
             let extras = WorkspaceExtras(namedSurfaces: namedSurfaces, displayField: display.field, colormap: display.colormap)
             try JSONEncoder().encode(extras).write(to: dir.appendingPathComponent("workspace.json"))
-            if let s = solver, initialized, !isRunning {
-                try SolutionArchive.write(s).write(to: dir.appendingPathComponent("data.bin"))
-                try JSONEncoder().encode(residuals).write(to: dir.appendingPathComponent("residuals.json"))
-                try JSONEncoder().encode(reportHistory).write(to: dir.appendingPathComponent("reports.json"))
-            } else {
-                try? fm.removeItem(at: dir.appendingPathComponent("data.bin"))
-            }
             documentURL = dir
             isDirty = false
             log("Wrote case\(initialized ? " and data" : "") to \(dir.path)")
@@ -100,9 +91,8 @@ extension Workspace {
     func openCase(url dir: URL) {
         guard !isRunning else { return }
         do {
-            let caseData = try Data(contentsOf: dir.appendingPathComponent("case.json"))
-            let s = try CaseSetup.decodeLenient(caseData)
-            let m = try MeshIO.readBinary(Data(contentsOf: dir.appendingPathComponent("mesh.crlmesh")))
+            let pkg = try CasePackage.read(dir)
+            let s = pkg.setup, m = pkg.mesh
             setMesh(m, source: dir.lastPathComponent)
             setup = s
             setup.adopt(mesh: m)
@@ -110,13 +100,9 @@ extension Workspace {
                 namedSurfaces = e.namedSurfaces; display.field = e.displayField; display.colormap = e.colormap
             }
             documentURL = dir
-            let dataURL = dir.appendingPathComponent("data.bin")
-            if FileManager.default.fileExists(atPath: dataURL.path), let solver = ensureSolver() {
-                try SolutionArchive.read(Data(contentsOf: dataURL), into: solver)
-                let r = (try? JSONDecoder().decode(ResidualHistory.self, from: Data(contentsOf: dir.appendingPathComponent("residuals.json")))) ?? ResidualHistory()
-                let rep = (try? JSONDecoder().decode(ReportHistory.self, from: Data(contentsOf: dir.appendingPathComponent("reports.json")))) ?? ReportHistory()
-                solver.restoreHistory(residuals: r, reports: rep)
-                residuals = r; reportHistory = rep
+            if pkg.hasData, let solver = ensureSolver() {
+                try CasePackage.restore(dir, into: solver)
+                residuals = solver.residuals; reportHistory = solver.reportHistory
                 initialized = true
                 currentIteration = solver.iteration
                 flowTime = solver.state.time
