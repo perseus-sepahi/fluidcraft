@@ -73,6 +73,9 @@ public final class PressureBasedSolver: @unchecked Sendable {
     public var log: (String) -> Void = { print($0) }
     public var stopRequested = false
     var _locator: CellLocator? = nil
+    /// Conservative variables when the density-based solver is selected.
+    var densityState: DensityBasedState? = nil
+    public var isDensityBased: Bool { setup.general.solver == .densityBased }
 
     public var iteration: Int { state.iteration }
     public var isTransient: Bool { setup.general.time == .transient }
@@ -165,6 +168,7 @@ public final class PressureBasedSolver: @unchecked Sendable {
         var s2 = s
         s2.adopt(mesh: mesh)
         let turbChanged = s2.models.viscous != setup.models.viscous
+        if s2.general.solver != setup.general.solver { densityState = nil }
         setup = s2
         exprs = try Expr.compileNamed(s2.expressions.map { ($0.name, $0.definition) })
         bc = try BoundaryData(mesh: mesh, setup: s2, exprs: exprs, time: state.time)
@@ -317,6 +321,11 @@ public final class PressureBasedSolver: @unchecked Sendable {
 
     public func initialize() throws {
         try Initialization.run(self)
+        densityState = nil
+        if isDensityBased {
+            dbInitialize()
+            log("Density-based solver: initialized conservative variables (γ = \(String(format: "%.4f", gasGamma))).")
+        }
     }
 
     // MARK: Gradients
@@ -1040,7 +1049,7 @@ public final class PressureBasedSolver: @unchecked Sendable {
         let n = iterations ?? setup.run.iterations
         var done = 0
         for _ in 0..<n {
-            let r = iterate()
+            let r = isDensityBased ? iterateDensityBased() : iterate()
             done += 1
             if r.values.contains(where: { !$0.isFinite }) || state.u.contains(where: { !$0.x.isFinite }) {
                 log("Divergence detected in AMG solver or residuals at iteration \(state.iteration).")
@@ -1069,7 +1078,16 @@ public final class PressureBasedSolver: @unchecked Sendable {
                 updateFlowBoundaries()
             }
             var last: [String: Double] = [:]
-            for _ in 0..<setup.run.maxIterationsPerTimeStep {
+            if isDensityBased {
+                last = densityBasedTimeStep()
+                total += 1
+                progress?(self, last)
+                if last.values.contains(where: { !$0.isFinite }) {
+                    log("Divergence detected at time step \(state.timeStep).")
+                    return RunResult(iterations: total, converged: false, diverged: true, stopped: false)
+                }
+            }
+            for _ in 0..<(isDensityBased ? 0 : setup.run.maxIterationsPerTimeStep) {
                 last = iterate()
                 total += 1
                 progress?(self, last)

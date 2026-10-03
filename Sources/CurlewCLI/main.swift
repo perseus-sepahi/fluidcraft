@@ -163,6 +163,45 @@ case "validate":
         let zc = mesh.bounds.centre.z
         let pp = solver.sample("pressure", at: [Vec3(0.15, 0.2, zc), Vec3(0.25, 0.2, zc)])
         print(String(format: "Cd %.4f (ref 5.57-5.59)  Cl %.5f (ref 0.0104-0.0110)  dp %.5f (ref 0.1172-0.1176)", cd, cl, pp[0] - pp[1]))
+    case "sod":
+        let (mesh, setup, endT) = try Benchmarks.sodCase(cells: Int(option("--cells", "400"))!)
+        let solver = try PressureBasedSolver(mesh: mesh, setup: setup)
+        solver.log = { _ in }
+        try solver.initialize()
+        let t0 = Date()
+        let r = solver.run()
+        let (l1, prof) = Benchmarks.sodError(solver, endTime: endT)
+        print(String(format: "Sod: %d cells, t = %.4e s (%d steps, %d explicit stages) in %.2f s; L1(rho error) = %.4f", mesh.nCells, solver.state.time, solver.state.timeStep, solver.iteration, Date().timeIntervalSince(t0), l1))
+        _ = r
+        for (i, p) in prof.enumerated() where i % max(1, prof.count / 20) == 0 { print(String(format: "  x %.3f  rho %.4f  exact %.4f", p.0, p.1, p.2)) }
+    case "ramp":
+        let (mesh, setup) = try Benchmarks.rampCase(nx: Int(option("--nx", "150"))!, ny: Int(option("--ny", "100"))!)
+        let solver = try PressureBasedSolver(mesh: mesh, setup: setup)
+        solver.log = { _ in }
+        try solver.initialize()
+        let t0 = Date()
+        let r = solver.run(iterations: Int(option("--iterations", "4000"))) { s, res in if s.iteration % 500 == 0 { print(s.formatResiduals(res)) } }
+        print("iterations \(r.iterations) converged \(r.converged) diverged \(r.diverged) in \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
+        let beta = Benchmarks.obliqueShockAngle(mach: 2.5, deflection: 15 * .pi / 180)
+        let mn = 2.5 * sin(beta)
+        let p21 = 1 + 2 * 1.4 / 2.4 * (mn * mn - 1)
+        var pr = 0.0, a = 0.0
+        if let z = mesh.zone(named: "ramp") {
+            for f in z.faceRange where mesh.faceCentres[f].x > 0.8 && mesh.faceCentres[f].x < 1.3 {
+                pr += (solver.state.bP[f - mesh.nInternalFaces] + setup.general.operatingPressure) * mesh.faceAreaMag[f]; a += mesh.faceAreaMag[f]
+            }
+        }
+        let ratio = pr / a / 1e5
+        // shock position along y = 0.5: where pressure crosses the mean of p1 and p2
+        let zc = mesh.bounds.centre.z
+        let xs = (0...600).map { 0.5 + Double($0) / 600 }
+        let ps = solver.sample("pressure", at: xs.map { Vec3($0, 0.5, zc) })
+        var xShock = Double.nan
+        let mid = 1e5 * (1 + p21) / 2
+        for i in 1..<ps.count where ps[i - 1] < mid && ps[i] >= mid { xShock = xs[i - 1] + (xs[i] - xs[i - 1]) * (mid - ps[i - 1]) / (ps[i] - ps[i - 1]); break }
+        let betaNum = atan(0.5 / (xShock - 0.5)) * 180 / .pi
+        print(String(format: "p2/p1 on ramp: Curlew %.4f   theory %.4f   (%.2f%%)", ratio, p21, 100 * (ratio - p21) / p21))
+        print(String(format: "shock angle:   Curlew %.2f deg   theory %.2f deg", betaNum, beta * 180 / .pi))
     default: fail("unknown validation case \(which)")
     }
 case "tutorial":

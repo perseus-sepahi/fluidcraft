@@ -13,8 +13,12 @@ struct GeneralPage: View {
                 }
                 .pickerStyle(.radioGroup)
                 if ws.setup.general.solver == .densityBased {
-                    Text("The density-based coupled solver runs from the Validation Suite (Sod shock tube, supersonic wedge). Cases in this window use the pressure-based solver.")
+                    Text("Explicit coupled solver for compressible ideal-gas flow (Roe or AUSM+ fluxes, MUSCL with Venkatakrishnan limiting, 4-stage Runge-Kutta). Use an ideal-gas material; viscous model Inviscid or Laminar.")
                         .font(.caption).foregroundStyle(.secondary)
+                    Picker("Flux type", selection: $ws.setup.methods.flux) {
+                        Text("Roe-FDS").tag(FluxScheme.roe); Text("AUSM+").tag(FluxScheme.ausm)
+                    }
+                    NumberField(label: "Courant number", value: $ws.setup.methods.courantNumber)
                 }
                 Picker("Time", selection: $ws.setup.general.time) {
                     Text("Steady").tag(TimeMode.steady)
@@ -161,9 +165,10 @@ struct MaterialEditor: View {
                         Text("constant").tag(DensityMethod.constant)
                         Text("boussinesq").tag(DensityMethod.boussinesq)
                         Text("incompressible-ideal-gas").tag(DensityMethod.incompressibleIdealGas)
+                        Text("ideal-gas (density-based solver)").tag(DensityMethod.idealGas)
                     }
                 }
-                if material.densityMethod != .incompressibleIdealGas || material.kind == .solid {
+                if (material.densityMethod != .incompressibleIdealGas && material.densityMethod != .idealGas) || material.kind == .solid {
                     NumberField(label: "Density", value: $material.density, unit: "kg/m³")
                 }
                 if material.kind == .fluid {
@@ -329,6 +334,9 @@ struct BoundaryEditor: View {
                         QuantityField(label: "Mass flow rate", value: bc.massFlowRate, unit: "kg/s")
                     case .pressureInlet:
                         QuantityField(label: "Gauge total pressure", value: bc.gaugePressure, unit: "Pa")
+                        if ws.setup.general.solver == .densityBased {
+                            NumberField(label: "Inlet Mach number (> 1: supersonic)", value: bc.machNumber)
+                        }
                     case .pressureOutlet:
                         QuantityField(label: "Gauge pressure", value: bc.gaugePressure, unit: "Pa")
                         Text("Backflow enters normal to the boundary.").font(.caption).foregroundStyle(.secondary)
@@ -347,7 +355,11 @@ struct BoundaryEditor: View {
                         }
                     case .pressureFarField:
                         QuantityField(label: "Gauge pressure", value: bc.gaugePressure, unit: "Pa")
-                        QuantityField(label: "Free-stream speed", value: bc.velocityMagnitude, unit: "m/s")
+                        if ws.setup.general.solver == .densityBased {
+                            NumberField(label: "Mach number", value: bc.machNumber)
+                        } else {
+                            QuantityField(label: "Free-stream speed", value: bc.velocityMagnitude, unit: "m/s")
+                        }
                         VectorField(label: "Flow direction", value: bc.flowDirection)
                     case .outflow:
                         Text("Zero normal diffusive flux; mass flow balanced to the inflow.").font(.caption).foregroundStyle(.secondary)

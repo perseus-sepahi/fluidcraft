@@ -17,6 +17,10 @@ public enum FieldCatalog {
             out.append("wall-distance")
         }
         out += ["wall-shear-stress", "skin-friction-coefficient", "y-plus"]
+        if s.isDensityBased || s.zoneMaterial.contains(where: { $0.densityMethod == .idealGas }) {
+            out += ["mach-number"]
+            if !out.contains("temperature") { out.append("temperature") }
+        }
         if s.isTransient && s.setup.run.dataSampling { out += ["mean-velocity-magnitude", "mean-pressure"] }
         out += s.setup.models.passiveScalars.map(\.name)
         return out
@@ -50,6 +54,9 @@ public enum FieldCatalog {
             let U = max(ref.velocity, 1e-300)
             return st.k.map { sqrt(2.0 / 3.0 * max($0, 0)) / U }
         case "cell-volume": return s.mesh.cellVolumes
+        case "mach-number":
+            let g = s.gasGamma, R = s.gasR
+            return (0..<n).map { norm(st.u[$0]) / sqrt(g * R * max(st.T[$0], 1e-6)) }
         case "orthogonal-quality": return MeshQuality.orthogonalQuality(s.mesh)
         case "wall-distance": return s.geo.wallDistance.isEmpty ? nil : s.geo.wallDistance
         case "vorticity-magnitude", "strain-rate", "q-criterion":

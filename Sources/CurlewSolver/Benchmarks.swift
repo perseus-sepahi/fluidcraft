@@ -342,4 +342,170 @@ public enum Benchmarks {
         s.run.iterations = 3000
         return s
     }
+
+    // MARK: Compressible: Sod shock tube (exact Riemann solution, Toro 2009)
+
+    /// Exact solution of the 1D Riemann problem; returns (rho, u, p) at x for diaphragm x0 and time t.
+    public static func exactRiemann(rhoL: Double, uL: Double, pL: Double, rhoR: Double, uR: Double, pR: Double,
+                                    gamma g: Double, x0: Double, t: Double, x: Double) -> (Double, Double, Double) {
+        let cL = sqrt(g * pL / rhoL), cR = sqrt(g * pR / rhoR)
+        func fK(_ p: Double, _ rhoK: Double, _ pK: Double, _ cK: Double) -> (Double, Double) {
+            if p > pK {
+                let A = 2 / ((g + 1) * rhoK), B = (g - 1) / (g + 1) * pK
+                let q = sqrt(A / (p + B))
+                return ((p - pK) * q, q * (1 - 0.5 * (p - pK) / (p + B)))
+            }
+            let r = pow(p / pK, (g - 1) / (2 * g))
+            return (2 * cK / (g - 1) * (r - 1), 1 / (rhoK * cK) * pow(p / pK, -(g + 1) / (2 * g)))
+        }
+        var p = max(1e-8, 0.5 * (pL + pR))
+        for _ in 0..<100 {
+            let (fL, dL) = fK(p, rhoL, pL, cL), (fR, dR) = fK(p, rhoR, pR, cR)
+            let dp = (fL + fR + uR - uL) / (dL + dR)
+            p = max(1e-8, p - dp)
+            if abs(dp) < 1e-12 * p { break }
+        }
+        let u = 0.5 * (uL + uR) + 0.5 * (fK(p, rhoR, pR, cR).0 - fK(p, rhoL, pL, cL).0)
+        let S = (x - x0) / t
+        if S <= u {
+            if p > pL {
+                let SL = uL - cL * sqrt((g + 1) / (2 * g) * p / pL + (g - 1) / (2 * g))
+                if S <= SL { return (rhoL, uL, pL) }
+                return (rhoL * ((p / pL + (g - 1) / (g + 1)) / ((g - 1) / (g + 1) * p / pL + 1)), u, p)
+            }
+            let cs = cL * pow(p / pL, (g - 1) / (2 * g))
+            if S <= uL - cL { return (rhoL, uL, pL) }
+            if S >= u - cs { return (rhoL * pow(p / pL, 1 / g), u, p) }
+            let c = 2 / (g + 1) * (cL + (g - 1) / 2 * (uL - S))
+            let uu = 2 / (g + 1) * (cL + (g - 1) / 2 * uL + S)
+            let rho = rhoL * pow(c / cL, 2 / (g - 1))
+            return (rho, uu, pL * pow(c / cL, 2 * g / (g - 1)))
+        }
+        if p > pR {
+            let SR = uR + cR * sqrt((g + 1) / (2 * g) * p / pR + (g - 1) / (2 * g))
+            if S >= SR { return (rhoR, uR, pR) }
+            return (rhoR * ((p / pR + (g - 1) / (g + 1)) / ((g - 1) / (g + 1) * p / pR + 1)), u, p)
+        }
+        let cs = cR * pow(p / pR, (g - 1) / (2 * g))
+        if S >= uR + cR { return (rhoR, uR, pR) }
+        if S <= u + cs { return (rhoR * pow(p / pR, 1 / g), u, p) }
+        let c = 2 / (g + 1) * (cR - (g - 1) / 2 * (uR - S))
+        let uu = 2 / (g + 1) * (-cR + (g - 1) / 2 * uR + S)
+        let rho = rhoR * pow(c / cR, 2 / (g - 1))
+        return (rho, uu, pR * pow(c / cR, 2 * g / (g - 1)))
+    }
+
+    /// Ideal gas with R = 287 J/kg K and gamma = 1.4.
+    static func idealAir() -> Material {
+        var m = Material(name: "air-ideal-gas")
+        m.densityMethod = .idealGas
+        m.molecularWeight = 8314.462618 / 287
+        m.specificHeat = 1.4 * 287 / 0.4
+        m.viscosity = 1.7894e-5
+        m.thermalConductivity = 0.0242
+        return m
+    }
+
+    public static func sodCase(cells: Int = 400) throws -> (Mesh, CaseSetup, endTime: Double) {
+        let mesh = try BlockMeshSpec(x: BlockAxis(from: 0, to: 1, cells: cells), y: BlockAxis(from: 0, to: 0.01, cells: 1), depth: 0.01,
+                                     sideKinds: ["x-min": .wall, "x-max": .wall, "y-min": .symmetry, "y-max": .symmetry]).build()
+        var s = CaseSetup()
+        s.title = "Sod shock tube"
+        s.general.solver = .densityBased
+        s.general.time = .transient
+        s.general.operatingPressure = 0
+        s.models.viscous = .inviscid
+        s.models.energy = true
+        s.materials.append(idealAir())
+        s.adopt(mesh: mesh)
+        for k in s.cellZones.keys { s.cellZones[k]!.material = "air-ideal-gas" }
+        s.initialization.method = .standard
+        s.initialization.gaugePressure = 1e4
+        s.initialization.temperature = .constant(1e4 / (0.125 * 287))
+        var pl = PatchSettings(); pl.region = .box; pl.parameters = [-1, -1, -1, 0.5, 1, 1]; pl.field = "pressure"; pl.value = 1e5
+        var tl = PatchSettings(); tl.region = .box; tl.parameters = [-1, -1, -1, 0.5, 1, 1]; tl.field = "temperature"; tl.value = .constant(1e5 / 287)
+        s.initialization.patches = [pl, tl]
+        let endTime = 0.2 / sqrt(1e5 / 1.0)
+        s.run.timeStepSize = endTime / 10
+        s.run.numberOfTimeSteps = 10
+        s.methods.courantNumber = 0.8
+        s.methods.momentum = .secondOrderUpwind
+        return (mesh, s, endTime)
+    }
+
+    /// L1 density error against the exact solution, normalised by the left density.
+    public static func sodError(_ solver: PressureBasedSolver, endTime: Double) -> (l1: Double, profile: [(Double, Double, Double)]) {
+        var err = 0.0, prof: [(Double, Double, Double)] = []
+        let m = solver.mesh
+        for c in 0..<m.nCells {
+            let x = m.cellCentres[c].x
+            let ex = exactRiemann(rhoL: 1, uL: 0, pL: 1e5, rhoR: 0.125, uR: 0, pR: 1e4, gamma: 1.4, x0: 0.5, t: endTime, x: x)
+            err += abs(solver.state.rho[c] - ex.0) * (m.cellVolumes[c] / m.totalVolume)
+            prof.append((x, solver.state.rho[c], ex.0))
+        }
+        return (err, prof.sorted { $0.0 < $1.0 })
+    }
+
+    // MARK: Compressible: Mach 2.5 flow over a 15° ramp (oblique-shock theory)
+
+    /// Shock angle from the theta-beta-M relation (weak solution).
+    public static func obliqueShockAngle(mach M: Double, deflection theta: Double, gamma g: Double = 1.4) -> Double {
+        func f(_ b: Double) -> Double { tan(theta) - 2 / tan(b) * (M * M * sin(b) * sin(b) - 1) / (M * M * (g + cos(2 * b)) + 2) }
+        var lo = asin(1 / M) + 1e-9, hi = Double.pi / 2
+        // weak solution lies between the Mach angle and the max-deflection angle; bisect on the first sign change
+        var best = lo
+        let n = 2000
+        var prev = f(lo)
+        for i in 1...n {
+            let b = lo + (hi - lo) * Double(i) / Double(n)
+            let v = f(b)
+            if prev > 0 && v <= 0 || prev < 0 && v >= 0 { best = b; hi = b; lo = b - (hi - lo) / Double(n); break }
+            prev = v
+        }
+        var a = lo, b = best
+        for _ in 0..<100 {
+            let mid = 0.5 * (a + b)
+            if (f(a) > 0) == (f(mid) > 0) { a = mid } else { b = mid }
+        }
+        return 0.5 * (a + b)
+    }
+
+    public static func rampCase(nx: Int = 150, ny: Int = 100, mach: Double = 2.5, angleDegrees: Double = 15) throws -> (Mesh, CaseSetup) {
+        let base = try BlockMeshSpec(x: BlockAxis(from: 0, to: 1.5, cells: nx), y: BlockAxis(from: 0, to: 1, cells: ny), depth: 0.05, patches: [
+            PatchRule(name: "inlet", kind: .pressureFarField, boxMin: [0, 0, -1], boxMax: [0, 1, 1]),
+            PatchRule(name: "outlet", kind: .pressureOutlet, boxMin: [1.5, 0, -1], boxMax: [1.5, 1, 1]),
+            PatchRule(name: "top", kind: .symmetry, boxMin: [0, 1, -1], boxMax: [1.5, 1, 1]),
+            PatchRule(name: "upstream", kind: .symmetry, boxMin: [0, 0, -1], boxMax: [0.5, 0, 1]),
+            PatchRule(name: "ramp", kind: .wall, boxMin: [0.5, 0, -1], boxMax: [1.5, 0, 1]),
+        ]).build()
+        let t = tan(angleDegrees * .pi / 180)
+        let pts = base.points.map { p -> Vec3 in
+            let yb = p.x > 0.5 ? (p.x - 0.5) * t : 0
+            return Vec3(p.x, yb + p.y * (1 - yb), p.z)
+        }
+        let mesh = Mesh(points: pts, faceNodeOffsets: base.faceNodeOffsets, faceNodes: base.faceNodes, owner: base.owner,
+                        neighbour: base.neighbour, nCells: base.nCells, boundaryZones: base.boundaryZones,
+                        cellZones: base.cellZones, cellZone: base.cellZone)
+        var s = CaseSetup()
+        s.title = "Mach \(mach) ramp, \(Int(angleDegrees)) deg"
+        s.general.solver = .densityBased
+        s.general.operatingPressure = 0
+        s.models.viscous = .inviscid
+        s.models.energy = true
+        s.materials.append(idealAir())
+        s.adopt(mesh: mesh)
+        for k in s.cellZones.keys { s.cellZones[k]!.material = "air-ideal-gas" }
+        var ff = BoundarySettings(type: .pressureFarField)
+        ff.machNumber = mach; ff.flowDirection = [1, 0, 0]; ff.gaugePressure = 1e5; ff.temperature = 300
+        s.boundaries["inlet"] = ff
+        var out = BoundarySettings(type: .pressureOutlet); out.gaugePressure = 1e5; out.temperature = 300
+        s.boundaries["outlet"] = out
+        s.initialization.method = .hybrid
+        s.methods.courantNumber = 1.5
+        s.methods.momentum = .secondOrderUpwind
+        s.residuals.continuity = 1e-5; s.residuals.velocity = 1e-5; s.residuals.energy = 1e-5
+        s.run.iterations = 4000
+        s.reference.pressure = 1e5
+        return (mesh, s)
+    }
 }

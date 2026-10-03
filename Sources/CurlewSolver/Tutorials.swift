@@ -60,6 +60,15 @@ public enum TutorialCatalog {
         Tutorial(id: "naca0012", title: "NACA 0012 Airfoil at 10° (Spalart-Allmaras)",
                  summary: "Gmsh mesh with boundary layer around the airfoil, far field at 30 chords, Re = 6×10⁶.",
                  needsGmsh: true, suggestedField: "pressure-coefficient") { try naca0012() },
+        Tutorial(id: "supersonic-ramp", title: "Supersonic Ramp (density-based, Mach 2.5)",
+                 summary: "Inviscid Mach 2.5 flow over a 15° compression ramp: Roe flux, MUSCL, characteristic far field; the oblique shock vs theory.",
+                 needsGmsh: false, suggestedField: "mach-number") { try Benchmarks.rampCase() },
+        Tutorial(id: "sod", title: "Sod Shock Tube (density-based, transient)",
+                 summary: "The classic Riemann problem: shock, contact and rarefaction from an exact initial discontinuity.",
+                 needsGmsh: false, suggestedField: "density") {
+            let (m, s, _) = try Benchmarks.sodCase(cells: 400)
+            return (m, s)
+        },
         Tutorial(id: "pipe", title: "Laminar Pipe Flow (3D, Re = 100)",
                  summary: "Gmsh tetrahedral pipe; developing flow and pressure drop vs Hagen-Poiseuille.",
                  needsGmsh: true, suggestedField: "velocity-magnitude") { try pipe() },

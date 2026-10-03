@@ -20,6 +20,8 @@ public enum ValidationSuite {
         case flatPlateSA = "Flat plate Spalart-Allmaras (Kármán-Schoenherr)"
         case schaferTurek = "Cylinder in channel Re=20 (Schäfer-Turek 2D-1)"
         case cylinder100 = "Cylinder wake Re=100 (Williamson 1996)"
+        case sod = "Sod shock tube (exact Riemann solution)"
+        case ramp = "Mach 2.5 flow over a 15° ramp (oblique-shock theory)"
 
         public var needsGmsh: Bool { self == .schaferTurek }
         public var estimate: String {
@@ -30,6 +32,8 @@ public enum ValidationSuite {
             case .flatPlateSST, .flatPlateSA: return "~20 s"
             case .schaferTurek: return "~30 s"
             case .cylinder100: return "~2 min"
+            case .sod: return "~1 s"
+            case .ramp: return "~30 s"
             }
         }
     }
@@ -96,6 +100,31 @@ public enum ValidationSuite {
             add("Drag coefficient", "5.57 – 5.59", fmt(cd), cd > 5.55 && cd < 5.60)
             add("Lift coefficient", "0.0104 – 0.0110", String(format: "%.5f", cl), cl > 0.0095 && cl < 0.0115)
             add("Δp front-back", "0.1172 – 0.1176", String(format: "%.5f", p[0] - p[1]), abs((p[0] - p[1]) - 0.1174) < 0.0006)
+        case .sod:
+            let (m, s, endT) = try Benchmarks.sodCase(cells: 400)
+            let solver = try PressureBasedSolver(mesh: m, setup: s)
+            solver.log = { _ in }
+            try solver.initialize()
+            _ = solver.run()
+            let (l1, _) = Benchmarks.sodError(solver, endTime: endT)
+            add("L1 density error at t = 0.2 (400 cells)", "≤ 0.005", String(format: "%.4f", l1), l1 <= 0.005)
+        case .ramp:
+            let (m, s) = try Benchmarks.rampCase()
+            let solver = try PressureBasedSolver(mesh: m, setup: s)
+            solver.log = { _ in }
+            try solver.initialize()
+            _ = solver.run(iterations: 4000) { s, r in if s.iteration % 500 == 0 { log(s.formatResiduals(r)) } }
+            let beta = Benchmarks.obliqueShockAngle(mach: 2.5, deflection: 15 * .pi / 180)
+            let mn = 2.5 * sin(beta)
+            let p21 = 1 + 2 * 1.4 / 2.4 * (mn * mn - 1)
+            var pr = 0.0, a = 0.0
+            if let z = m.zone(named: "ramp") {
+                for f in z.faceRange where m.faceCentres[f].x > 0.8 && m.faceCentres[f].x < 1.3 {
+                    pr += (solver.state.bP[f - m.nInternalFaces] + s.general.operatingPressure) * m.faceAreaMag[f]; a += m.faceAreaMag[f]
+                }
+            }
+            let ratio = pr / a / 1e5
+            add("Pressure ratio across the shock", String(format: "%.4f ±1%%", p21), String(format: "%.4f", ratio), abs(ratio - p21) / p21 < 0.01)
         case .cylinder100:
             let (m, s) = try Benchmarks.cylinderCase(dt: 0.05, endTime: 200)
             let solver = try PressureBasedSolver(mesh: m, setup: s)
