@@ -31,7 +31,18 @@ func convectionCorrection(_ scheme: ConvectionScheme, bounded: Bool, F: Double,
         ho = (nv > 0 && nv < 1) ? central : phiU
     }
     if bounded {
-        let lo = min(phiP, phiN), hi = max(phiP, phiN)
+        // TVD (van Leer) limiting on unstructured meshes (Darwish & Moukalled 2003):
+        // r = 2 grad(phi_U).d_UD / (phi_D - phi_U) - 1, phi_f = phi_U + psi(r) (phi_D - phi_U) * frac
+        let delta = phiD - phiU
+        if abs(delta) < 1e-300 { return 0 }
+        let dUD = up ? d : -d
+        let gU = up ? gradP : gradN
+        let r = 2 * dot(gU, dUD) / delta - 1
+        let psi = (r + abs(r)) / (1 + abs(r))
+        let frac = up ? (1 - w) : w            // distance fraction from the upwind centre to the face
+        let tvd = phiU + psi * frac * delta
+        // keep the scheme's own value when it lies inside the TVD envelope
+        let lo = min(phiU, tvd), hi = max(phiU, tvd)
         ho = min(max(ho, lo), hi)
     }
     return ho - phiU

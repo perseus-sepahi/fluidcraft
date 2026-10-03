@@ -81,11 +81,22 @@ public struct BlockMeshSpec: Codable, Sendable, Equatable {
     public var obstacles: [[Double]]
     public var patches: [PatchRule]
     public var sideKinds: [String: ZoneKind]
+    /// Extra cell zones: cells whose centres fall in `box` [xmin,ymin,zmin,xmax,ymax,zmax] join the zone.
+    public var cellZones: [CellZoneRegion]
+
+    public struct CellZoneRegion: Codable, Sendable, Equatable {
+        public var name: String
+        public var kind: CellZoneKind
+        public var box: [Double]
+        public init(name: String, kind: CellZoneKind, box: [Double]) { self.name = name; self.kind = kind; self.box = box }
+    }
 
     public init(x: BlockAxis, y: BlockAxis, z: BlockAxis? = nil, depth: Double = 1,
-                obstacles: [[Double]] = [], patches: [PatchRule] = [], sideKinds: [String: ZoneKind] = [:]) {
+                obstacles: [[Double]] = [], patches: [PatchRule] = [], sideKinds: [String: ZoneKind] = [:],
+                cellZones: [CellZoneRegion] = []) {
         self.x = x; self.y = y; self.z = z; self.depth = depth
         self.obstacles = obstacles; self.patches = patches; self.sideKinds = sideKinds
+        self.cellZones = cellZones
     }
 
     public func build() throws -> Mesh {
@@ -110,6 +121,19 @@ public struct BlockMeshSpec: Codable, Sendable, Equatable {
             if !blocked { cellID[ci(i, j, k)] = nCells; nCells += 1 }
         }}}
         guard nCells > 0 else { throw MeshError.topology("obstacles removed every cell") }
+        var zoneOfCell = [Int32](repeating: 0, count: Int(nCells))
+        if !cellZones.isEmpty {
+            for k in 0..<nz { for j in 0..<ny { for i in 0..<nx {
+                let id = cellID[ci(i, j, k)]
+                guard id >= 0 else { continue }
+                let c = Vec3(0.5 * (xs[i] + xs[i + 1]), 0.5 * (ys[j] + ys[j + 1]), 0.5 * (zs[k] + zs[k + 1]))
+                for (zi, r) in cellZones.enumerated() where r.box.count == 6 {
+                    if c.x > r.box[0] && c.x < r.box[3] && c.y > r.box[1] && c.y < r.box[4] && (twoD || (c.z > r.box[2] && c.z < r.box[5])) {
+                        zoneOfCell[Int(id)] = Int32(zi + 1)
+                    }
+                }
+            }}}
+        }
 
         // Nodes (only those used)
         let NX = nx + 1, NY = ny + 1, NZ = nz + 1
@@ -126,6 +150,10 @@ public struct BlockMeshSpec: Codable, Sendable, Equatable {
             }}}
         }}}
         b.nCells = Int(nCells)
+        if !cellZones.isEmpty {
+            b.cellZones = [MeshBuilder.CellZoneSpec(name: "fluid", kind: .fluid)] + cellZones.map { MeshBuilder.CellZoneSpec(name: $0.name, kind: $0.kind) }
+            b.cellZoneOfCell = zoneOfCell
+        }
 
         let sideNames = ["x-min", "x-max", "y-min", "y-max", twoD ? "frontAndBack" : "z-min", twoD ? "frontAndBack" : "z-max"]
         func zoneFor(side: Int?, centre: Vec3, normal: Vec3) -> Int32 {

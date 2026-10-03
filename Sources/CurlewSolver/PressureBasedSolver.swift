@@ -334,6 +334,7 @@ public final class PressureBasedSolver: @unchecked Sendable {
         let diag = g.pattern.diag
         let muEff = effectiveViscosity()
         let scheme = setup.methods.momentum
+        let limitMom = setup.methods.limitMomentum
         let turbulent = setup.models.viscous.isTurbulent || zoneMaterial.contains { $0.viscosityMethod != .constant }
         let nonOrth = g.hasNonOrthogonality
         let grav = gravity
@@ -372,7 +373,7 @@ public final class PressureBasedSolver: @unchecked Sendable {
                     let rP = cf - m.cellCentres[P], rN = cf - m.cellCentres[N]
                     let dd = g.delta[f]
                     for k in 0..<3 {
-                        corr[k] = F * convectionCorrection(scheme, bounded: false, F: F, phiP: u[P][k], phiN: u[N][k],
+                        corr[k] = F * convectionCorrection(scheme, bounded: limitMom, F: F, phiP: u[P][k], phiN: u[N][k],
                                                            gradP: gU[k][P], gradN: gU[k][N], w: w, rP: rP, rN: rN, d: dd)
                     }
                 }
@@ -803,7 +804,7 @@ public final class PressureBasedSolver: @unchecked Sendable {
             }
         }
         var eq = TransportEquation(phi: state.T, bPhi: state.bT, grad: gradT, gamma: gamma, convScale: cpF,
-                                   scheme: setup.methods.energy, bounded: false, bc: bc.thermal,
+                                   scheme: setup.methods.energy, bounded: setup.methods.limitMomentum, bc: bc.thermal,
                                    Su: Su, Sp: Sp, relax: setup.controls.urf.energy)
         let asm = TransportAssembler(geo: g)
         var b = [Double](repeating: 0, count: nC)

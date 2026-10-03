@@ -252,6 +252,9 @@ public struct SolutionMethods: Codable, Sendable, Equatable {
     public var transient: TransientFormulation = .secondOrderImplicit
     /// Extra pressure-correction solves per iteration on non-orthogonal meshes.
     public var nonOrthogonalCorrectors = 0
+    /// Limit higher-order face values (momentum, energy) to the range of the two adjacent cells:
+    /// keeps temperatures bounded and improves convergence on coarse meshes.
+    public var limitMomentum = true
     /// PISO neighbour corrections.
     public var pisoCorrectors = 1
     // Density-based
