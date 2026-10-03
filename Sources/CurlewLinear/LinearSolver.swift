@@ -26,7 +26,7 @@ public struct LinearSolverSettings: Codable, Sendable, Equatable {
         self.method = method; self.cycle = cycle; self.relTol = relTol; self.absTol = absTol
         self.maxIterations = maxIterations; self.rebuildInterval = rebuildInterval
     }
-    public static let pressure = LinearSolverSettings(method: .amgCG, cycle: .k, relTol: 0.01, maxIterations: 100)
+    public static let pressure = LinearSolverSettings(method: .amgCG, cycle: .k, relTol: 0.05, maxIterations: 100)
     public static let transport = LinearSolverSettings(method: .amgBiCGStab, cycle: .v, relTol: 0.1, maxIterations: 30)
 }
 
@@ -68,19 +68,22 @@ public final class LinearSolver: @unchecked Sendable {
         solveCount += 1
     }
 
+    /// Solve A x = b. Pass `sameMatrix: true` when A is unchanged since the previous call
+    /// (e.g. the three momentum components) to skip refreshing the AMG coarse operators.
     @discardableResult
-    public func solve(_ A: SparseMatrix, x: inout [Double], b: [Double]) -> LinearSolveStats {
+    public func solve(_ A: SparseMatrix, x: inout [Double], b: [Double], sameMatrix: Bool = false) -> LinearSolveStats {
         let n = A.n
         ensure(n)
+        let prep = { if !sameMatrix || self.builtFor != ObjectIdentifier(A.pattern) { self.prepareAMG(A) } }
         if let acc = accelerator, acc.shouldHandle(n: n, method: settings.method) {
-            prepareAMG(A)
+            prep()
             return acc.solve(A, x: &x, b: b, settings: settings, amg: amg)
         }
         switch settings.method {
         case .gaussSeidel: return solveGS(A, &x, b)
-        case .amg: prepareAMG(A); return solveAMG(A, &x, b)
-        case .amgCG: prepareAMG(A); return solveFCG(A, &x, b)
-        case .amgBiCGStab: prepareAMG(A); return solveBiCGStab(A, &x, b)
+        case .amg: prep(); return solveAMG(A, &x, b)
+        case .amgCG: prep(); return solveFCG(A, &x, b)
+        case .amgBiCGStab: prep(); return solveBiCGStab(A, &x, b)
         }
     }
 
@@ -135,7 +138,7 @@ public final class LinearSolver: @unchecked Sendable {
                 p = z
             } else {
                 let beta = -dotp(z, q) / pq
-                for i in 0..<N { p[i] = z[i] + beta * p[i] }
+                axpby(z, &p, beta, N)
             }
             A.multiply(p, into: &q)
             pq = dotp(p, q)
@@ -171,13 +174,19 @@ public final class LinearSolver: @unchecked Sendable {
             if abs(rhoNew) < 1e-300 { break }
             let beta = (rhoNew / rho) * (alpha / omega)
             rho = rhoNew
-            for i in 0..<N { p[i] = r[i] + beta * (p[i] - omega * v[i]) }
+            p.withUnsafeMutableBufferPointer { pp in r.withUnsafeBufferPointer { rr in v.withUnsafeBufferPointer { vv in
+                let P = SharedPtr(pp.baseAddress!), R = ConstPtr(rr.baseAddress!), Vv = ConstPtr(vv.baseAddress!)
+                Parallel.forEach(N) { range in for i in range { P[i] = R[i] + beta * (P[i] - omega * Vv[i]) } }
+            }}}
             amg.apply(p, into: &phat, cycle: cyc)
             A.multiply(phat, into: &v)
             let rv = dotp(rhat, v)
             if abs(rv) < 1e-300 { break }
             alpha = rho / rv
-            for i in 0..<N { s[i] = r[i] - alpha * v[i] }
+            s.withUnsafeMutableBufferPointer { sp in r.withUnsafeBufferPointer { rr in v.withUnsafeBufferPointer { vv in
+                let S = SharedPtr(sp.baseAddress!), R = ConstPtr(rr.baseAddress!), Vv = ConstPtr(vv.baseAddress!)
+                Parallel.forEach(N) { range in for i in range { S[i] = R[i] - alpha * Vv[i] } }
+            }}}
             let sn = norm2(s)
             it += 1
             if sn <= settings.relTol * r0 || sn <= settings.absTol {
@@ -189,7 +198,12 @@ public final class LinearSolver: @unchecked Sendable {
             A.multiply(shat, into: &t)
             let tt = dotp(t, t)
             omega = tt > 0 ? dotp(t, s) / tt : 0
-            for i in 0..<N { x[i] += alpha * phat[i] + omega * shat[i]; r[i] = s[i] - omega * t[i] }
+            x.withUnsafeMutableBufferPointer { xp in r.withUnsafeMutableBufferPointer { rp in
+            phat.withUnsafeBufferPointer { ph in shat.withUnsafeBufferPointer { sh in s.withUnsafeBufferPointer { sp in t.withUnsafeBufferPointer { tp in
+                let X = SharedPtr(xp.baseAddress!), Rr = SharedPtr(rp.baseAddress!)
+                let PH = ConstPtr(ph.baseAddress!), SH = ConstPtr(sh.baseAddress!), S = ConstPtr(sp.baseAddress!), T = ConstPtr(tp.baseAddress!)
+                Parallel.forEach(N) { range in for i in range { X[i] += alpha * PH[i] + omega * SH[i]; Rr[i] = S[i] - omega * T[i] } }
+            }}}}}}
             rn = norm2(r)
             if rn <= settings.relTol * r0 || rn <= settings.absTol || omega == 0 { break }
         }
@@ -201,4 +215,13 @@ public final class LinearSolver: @unchecked Sendable {
 public protocol LinearAccelerator: AnyObject {
     func shouldHandle(n: Int, method: LinearMethod) -> Bool
     func solve(_ A: SparseMatrix, x: inout [Double], b: [Double], settings: LinearSolverSettings, amg: AMGHierarchy) -> LinearSolveStats
+}
+
+
+/// p = z + beta * p (parallel)
+func axpby(_ z: [Double], _ p: inout [Double], _ beta: Double, _ n: Int) {
+    p.withUnsafeMutableBufferPointer { pp in z.withUnsafeBufferPointer { zz in
+        let P = SharedPtr(pp.baseAddress!), Z = ConstPtr(zz.baseAddress!)
+        Parallel.forEach(n) { range in for i in range { P[i] = Z[i] + beta * P[i] } }
+    }}
 }

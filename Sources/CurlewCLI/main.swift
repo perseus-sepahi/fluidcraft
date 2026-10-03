@@ -1,6 +1,7 @@
 import Foundation
 import CurlewMesh
 import CurlewSolver
+import CurlewLinear
 import CurlewPost
 
 setvbuf(stdout, nil, _IOLBF, 0)
@@ -33,7 +34,8 @@ case "validate":
     case "cavity":
         let re = Int(option("--re", "100"))!
         let cells = Int(option("--cells", "64"))!
-        let (mesh, setup) = try Benchmarks.cavityCase(re: re, cells: cells)
+        var (mesh, setup) = try Benchmarks.cavityCase(re: re, cells: cells)
+        if let t = Double(option("--p-tol", "")) { setup.controls.linear.pressure.relTol = t }
         print("Mesh: \(mesh.summary)")
         let solver = try PressureBasedSolver(mesh: mesh, setup: setup)
         solver.log = { _ in }
@@ -186,6 +188,11 @@ case "tutorial":
         try FoamCaseExporter.export(mesh: mesh, setup: setup, to: URL(fileURLWithPath: dir), options: o)
         print("OpenFOAM case written to \(dir)"); exit(0)
     }
+    if args.contains("--mesh-info") {
+        print("  shapes \(mesh.cellShapeHistogram())")
+        for z in mesh.boundaryZones { print("  zone \(z.name) [\(z.kind.rawValue)] \(z.count)") }
+        print(MeshQuality.report(mesh).text)
+    }
     print("\(t.title): \(mesh.summary) (built in \(String(format: "%.1f", Date().timeIntervalSince(t0))) s)")
     let solver = try PressureBasedSolver(mesh: mesh, setup: setup)
     solver.log = { _ in }
@@ -308,6 +315,35 @@ case "test3d":
         let r = solver.run(iterations: 3000) { s, res in if s.iteration % 250 == 0 { print(which, s.formatResiduals(res)) } }
         print("\(which): iterations \(r.iterations) converged \(r.converged)")
     }
+case "bench-linear":
+    // 3D Poisson (Dirichlet walls) on an n^3 block mesh: CPU AMG-FCG vs Metal GPU AMG-PCG (mixed precision)
+    import_bench()
+case "bench-solver":
+    let n = Int(option("--n", "64"))!
+    let its = Int(option("--iterations", "30"))!
+    let mesh = try BlockMeshSpec(x: BlockAxis(from: 0, to: 1, cells: n), y: BlockAxis(from: 0, to: 1, cells: n), z: BlockAxis(from: 0, to: 1, cells: n)).build()
+    for gpu in [false, true] {
+        var s = CaseSetup()
+        var f = Material(name: "f"); f.density = 1; f.viscosity = 0.01
+        s.materials.append(f); s.adopt(mesh: mesh); for k in s.cellZones.keys { s.cellZones[k]!.material = "f" }
+        var lid = BoundarySettings(type: .wall); lid.wallMotion = .moving; lid.wallVelocity = [1, 0, 0]; s.boundaries["y-max"] = lid
+        s.models.viscous = .laminar
+        s.methods.coupling = .simplec; s.controls.urf.pressure = 1; s.controls.urf.momentum = 0.8
+        s.controls.linear.useGPU = gpu
+        let solver = try PressureBasedSolver(mesh: mesh, setup: s)
+        solver.log = { _ in }
+        try solver.initialize()
+        let t0 = Date()
+        var last: [String: Double] = [:]
+        _ = solver.run(iterations: its) { _, r in last = r }
+        let dt = Date().timeIntervalSince(t0)
+        if !PressureBasedSolver.profile.isEmpty {
+            for (k, v) in PressureBasedSolver.profile.sorted(by: { $0.value > $1.value }) { print(String(format: "    %-12@ %7.1f ms/iteration", k as NSString, 1000 * v / Double(its))) }
+            PressureBasedSolver.profile = [:]
+        }
+        print(String(format: "%@ pressure solver: %d cells, %d iterations in %.2f s (%.1f ms/iteration)  continuity %.4e  x-velocity %.4e",
+                     gpu ? "GPU" : "CPU", mesh.nCells, its, dt, 1000 * dt / Double(its), last["continuity"] ?? 0, last["x-velocity"] ?? 0))
+    }
 case "mesh-info":
     guard args.count > 1 else { fail("mesh-info <file>") }
     let mesh = try MeshIO.read(url: URL(fileURLWithPath: args[1]))
@@ -317,4 +353,51 @@ case "mesh-info":
     print(MeshQuality.report(mesh).text)
 default:
     fail("unknown command \(cmd)")
+}
+
+
+func import_bench() {
+    let n = Int(option("--n", "80"))!
+    let mesh = try! BlockMeshSpec(x: BlockAxis(from: 0, to: 1, cells: n), y: BlockAxis(from: 0, to: 1, cells: n), z: BlockAxis(from: 0, to: 1, cells: n)).build()
+    let (pat, up, lo) = SparsePattern.fromPairs(n: mesh.nCells, owner: mesh.owner, neighbour: mesh.neighbour)
+    let A = SparseMatrix(pattern: pat)
+    var b = [Double](repeating: 0, count: mesh.nCells)
+    for f in 0..<mesh.nInternalFaces {
+        let P = Int(mesh.owner[f]), N = Int(mesh.neighbour[f])
+        let S = mesh.faceAreas[f], d = mesh.cellCentres[N] - mesh.cellCentres[P]
+        let c = dot(S, S) / dot(S, d)
+        A.values[Int(pat.diag[P])] += c; A.values[Int(pat.diag[N])] += c
+        A.values[Int(up[f])] -= c; A.values[Int(lo[f])] -= c
+    }
+    for f in mesh.nInternalFaces..<mesh.nFaces {
+        let P = Int(mesh.owner[f]); let S = mesh.faceAreas[f], d = mesh.faceCentres[f] - mesh.cellCentres[P]
+        A.values[Int(pat.diag[P])] += dot(S, S) / dot(S, d)
+    }
+    for c in 0..<mesh.nCells { let p = mesh.cellCentres[c]; b[c] = sin(3 * p.x) * cos(2 * p.y) * mesh.cellVolumes[c] }
+    print("3D Poisson: \(mesh.nCells) unknowns, \(pat.nnz) non-zeros")
+    for tol in [1e-2, 1e-6] {
+        var x = [Double](repeating: 0, count: mesh.nCells)
+        let cpu = LinearSolver(LinearSolverSettings(method: .amgCG, cycle: .k, relTol: tol, maxIterations: 200))
+        cpu.amg.setup(A)
+        _ = cpu.solve(A, x: &x, b: b) // warm-up (setup cached)
+        x = [Double](repeating: 0, count: mesh.nCells)
+        var t0 = Date()
+        let sc = cpu.solve(A, x: &x, b: b)
+        let tCPU = Date().timeIntervalSince(t0)
+        print(String(format: "  rel tol %.0e  CPU  AMG-FCG(K): %3d its  %.3f s  final %.2e", tol, sc.iterations, tCPU, sc.finalResidual / sc.initialResidual))
+        guard let gpu = GPUAccelerator.shared else { print("  no Metal device"); continue }
+        gpu.minimumRows = 0
+        let gs = LinearSolver(LinearSolverSettings(method: .amgCG, cycle: .k, relTol: tol, maxIterations: 200))
+        gs.accelerator = gpu
+        var xg = [Double](repeating: 0, count: mesh.nCells)
+        _ = gs.solve(A, x: &xg, b: b) // warm-up: buffers and pipelines
+        xg = [Double](repeating: 0, count: mesh.nCells)
+        t0 = Date()
+        let sg = gs.solve(A, x: &xg, b: b)
+        let tGPU = Date().timeIntervalSince(t0)
+        var diff = 0.0, mx = 0.0
+        for i in 0..<x.count { diff = max(diff, abs(x[i] - xg[i])); mx = max(mx, abs(x[i])) }
+        print(String(format: "  rel tol %.0e  GPU  %@: %3d its  %.3f s  final %.2e  (speed-up %.2fx, max |x_gpu - x_cpu| / max|x| = %.1e)",
+                     tol, gpu.name, sg.iterations, tGPU, sg.finalResidual / sg.initialResidual, tCPU / tGPU, diff / max(mx, 1e-300)))
+    }
 }

@@ -210,7 +210,9 @@ public enum TutorialCatalog {
         var cl = ReportDefinition(name: "cl", kind: .liftCoefficient); cl.zones = ["airfoil"]; cl.direction = [-sin(a), cos(a), 0]
         var cd = ReportDefinition(name: "cd", kind: .dragCoefficient); cd.zones = ["airfoil"]; cd.direction = [cos(a), sin(a), 0]
         s.reports = [cl, cd]
-        s.run.iterations = 3000
+        // airfoil boundary layers develop long after the potential-flow start: converge tightly
+        s.residuals.continuity = 1e-6; s.residuals.velocity = 1e-7; s.residuals.turbulence = 1e-7
+        s.run.iterations = 4000
         return (mesh, s)
     }
 

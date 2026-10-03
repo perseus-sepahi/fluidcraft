@@ -16,6 +16,9 @@ public final class AMGHierarchy: @unchecked Sendable {
         /// Coarse nnz index for every nnz of this level's matrix.
         var nnzMap: [Int32] = []
         var nCoarse = 0
+        /// Fine members of each coarse row (CSR) for parallel restriction.
+        var memberPtr: [Int32] = []
+        var members: [Int32] = []
         var x: [Double], b: [Double], r: [Double], snapshot: [Double]
         // K-cycle work vectors (on the coarse level they feed)
         var c: [Double] = [], v: [Double] = [], d: [Double] = [], w: [Double] = [], r2: [Double] = []
@@ -64,6 +67,13 @@ public final class AMGHierarchy: @unchecked Sendable {
             if Double(L.A.n) / Double(max(nc, 1)) < 1.2 { break } // stagnated
             let g = AMGHierarchy.galerkin(L.A, agg: agg, nc: nc)
             L.agg = agg; L.nnzMap = g.nnzMap; L.nCoarse = nc
+            var mp = [Int32](repeating: 0, count: nc + 1)
+            for a in agg { mp[Int(a) + 1] += 1 }
+            for I in 0..<nc { mp[I + 1] += mp[I] }
+            var fillM = Array(mp[0..<nc])
+            var mem = [Int32](repeating: 0, count: agg.count)
+            for (i, a) in agg.enumerated() { mem[Int(fillM[Int(a)])] = Int32(i); fillM[Int(a)] += 1 }
+            L.memberPtr = mp; L.members = mem
             let next = Level(g.matrix)
             levels.append(next)
             next.c = [Double](repeating: 0, count: nc); next.v = next.c; next.d = next.c; next.w = next.c; next.r2 = next.c
@@ -81,7 +91,19 @@ public final class AMGHierarchy: @unchecked Sendable {
             fine.values.withUnsafeBufferPointer { fv in
                 levels[l].nnzMap.withUnsafeBufferPointer { map in
                     coarse.values.withUnsafeMutableBufferPointer { cv in
-                        for k in 0..<fv.count { cv[Int(map[k])] += fv[k] }
+                        // rows of a coarse matrix are filled by disjoint fine rows: parallel by coarse row
+                        let L = levels[l]
+                        let R = fine.pattern.rowPtr
+                        let MP = L.memberPtr, MEM = L.members
+                        let FV = ConstPtr(fv.baseAddress!), MAP = ConstPtr(map.baseAddress!), CV = SharedPtr(cv.baseAddress!)
+                        Parallel.forEach(L.nCoarse, minChunk: 1024) { range in
+                            for I in range {
+                                for mk in Int(MP[I])..<Int(MP[I + 1]) {
+                                    let i = Int(MEM[mk])
+                                    for k in Int(R[i])..<Int(R[i + 1]) { CV[Int(MAP[k])] += FV[k] }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -181,14 +203,21 @@ public final class AMGHierarchy: @unchecked Sendable {
     }
 
     func restrict(_ L: Level, into bc: inout [Double]) {
-        fill(&bc, 0)
-        L.agg.withUnsafeBufferPointer { agg in
-            L.r.withUnsafeBufferPointer { r in
-                bc.withUnsafeMutableBufferPointer { b in
-                    for i in 0..<r.count { b[Int(agg[i])] += r[i] }
+        let nc = L.nCoarse
+        L.memberPtr.withUnsafeBufferPointer { mp in
+        L.members.withUnsafeBufferPointer { mem in
+        L.r.withUnsafeBufferPointer { r in
+        bc.withUnsafeMutableBufferPointer { b in
+            let MP = ConstPtr(mp.baseAddress!), MEM = ConstPtr(mem.baseAddress!), R = ConstPtr(r.baseAddress!)
+            let B = SharedPtr(b.baseAddress!)
+            Parallel.forEach(nc) { range in
+                for I in range {
+                    var s = 0.0
+                    for k in Int(MP[I])..<Int(MP[I + 1]) { s += R[Int(MEM[k])] }
+                    B[I] = s
                 }
             }
-        }
+        }}}}
     }
 
     func prolongAdd(_ L: Level, from xc: [Double]) {

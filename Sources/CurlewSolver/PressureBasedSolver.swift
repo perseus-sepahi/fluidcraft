@@ -329,11 +329,25 @@ public final class PressureBasedSolver: @unchecked Sendable {
 
     // MARK: Momentum
 
+    /// Compile a cell-zone source (constant or expression) once per call.
+    func sourceFunction(_ q: Quantity) -> ((Vec3) -> Double)? {
+        switch q {
+        case .constant(let d): return d == 0 ? nil : { _ in d }
+        case .expression(let src):
+            guard let e = try? Expr(src, named: exprs) else { return nil }
+            let t = state.time
+            return { c in e.value(x: c.x, y: c.y, z: c.z, t: t) }
+        }
+    }
+
     /// Assemble and solve momentum; returns scaled residuals for x, y, z.
+    ///
+    /// Assembly is data-parallel in two phases: (A) every interior face computes its
+    /// coefficients and explicit fluxes independently; (B) every cell gathers its faces
+    /// through the cell->face connectivity and adds boundary and volume terms.
     func solveMomentum(urf: Double) -> [Double] {
         let m = mesh, g = geo
         let nI = g.nInternal, nC = g.nCells
-        let diag = g.pattern.diag
         let muEff = effectiveViscosity()
         let scheme = setup.methods.momentum
         let limitMom = setup.methods.limitMomentum
@@ -343,239 +357,241 @@ public final class PressureBasedSolver: @unchecked Sendable {
         let nonOrth = g.hasNonOrthogonality
         let grav = gravity
         let rhoOp = grav != .zero ? operatingDensity() : 0
-        A.zero()
-        for c in 0..<nC { bx[c] = 0; by[c] = 0; bz[c] = 0 }
         let flux = state.massFlux
         let u = state.u
-        let gU = gradU
-        var tsrc = [Vec3](repeating: .zero, count: turbulent ? nC : 0)
+        let gU0 = gradU[0], gU1 = gradU[1], gU2 = gradU[2]
+        let solid = isSolidCell, iface = isInterfaceFace
+        let hoActive = scheme != .firstOrderUpwind
 
+        // Phase A: interior faces
+        var fUp = [Double](repeating: 0, count: nI)
+        var fLo = [Double](repeating: 0, count: nI)
+        var fEx = [Vec3](repeating: .zero, count: nI)
+        var fTr = [Vec3](repeating: .zero, count: turbulent ? nI : 0)
+        fUp.withUnsafeMutableBufferPointer { up in fLo.withUnsafeMutableBufferPointer { lo in
+        fEx.withUnsafeMutableBufferPointer { ex in fTr.withUnsafeMutableBufferPointer { tr in
+            let UP = SharedPtr(up.baseAddress ?? UnsafeMutablePointer(bitPattern: 8)!)
+            let LO = SharedPtr(lo.baseAddress ?? UnsafeMutablePointer(bitPattern: 8)!)
+            let EX = SharedPtr(ex.baseAddress ?? UnsafeMutablePointer(bitPattern: 8)!)
+            let TR = SharedPtr(tr.baseAddress ?? UnsafeMutablePointer(bitPattern: 8)!)
+            Parallel.forEach(nI) { range in
+                for f in range {
+                    let P = Int(m.owner[f]), N = Int(m.neighbour[f])
+                    if iface[f] || solid[P] || solid[N] { continue }
+                    let F = flux[f]
+                    let w = g.weight[f]
+                    let mu = w * muEff[P] + (1 - w) * muEff[N]
+                    let dif = mu * g.orthCoeff[f]
+                    UP[f] = -(dif + max(-F, 0))
+                    LO[f] = -(dif + max(F, 0))
+                    var expl = Vec3.zero
+                    if F != 0 && hoActive {
+                        let cf = m.faceCentres[f]
+                        let rP = cf - m.cellCentres[P], rN = cf - m.cellCentres[N]
+                        let dd = g.delta[f]
+                        let uP = u[P], uN = u[N]
+                        expl.x = -F * convectionCorrection(scheme, bounded: limitMom, F: F, phiP: uP.x, phiN: uN.x, gradP: gU0[P], gradN: gU0[N], w: w, rP: rP, rN: rN, d: dd)
+                        expl.y = -F * convectionCorrection(scheme, bounded: limitMom, F: F, phiP: uP.y, phiN: uN.y, gradP: gU1[P], gradN: gU1[N], w: w, rP: rP, rN: rN, d: dd)
+                        expl.z = -F * convectionCorrection(scheme, bounded: limitMom, F: F, phiP: uP.z, phiN: uN.z, gradP: gU2[P], gradN: gU2[N], w: w, rP: rP, rN: rN, d: dd)
+                    }
+                    let g0 = w * gU0[P] + (1 - w) * gU0[N]
+                    let g1 = w * gU1[P] + (1 - w) * gU1[N]
+                    let g2 = w * gU2[P] + (1 - w) * gU2[N]
+                    if nonOrth {
+                        let T = g.nonOrth[f]
+                        expl += mu * Vec3(dot(g0, T), dot(g1, T), dot(g2, T))
+                    }
+                    EX[f] = expl
+                    if turbulent {
+                        // div(mu ((grad u)^T - (div u) I)): deviatoric transpose (see momentum notes)
+                        let S = m.faceAreas[f]
+                        let t = g0 * S.x + g1 * S.y + g2 * S.z
+                        let divu = g0.x + g1.y + g2.z
+                        TR[f] = mu * (t - divu * S)
+                    }
+                }
+            }
+        }}}}
+
+        // Zone source closures (compiled once)
+        let zoneMom: [[((Vec3) -> Double)?]] = zoneSettings.map { zs in zs.momentumSource.map { sourceFunction($0) } }
+        let transient = isTransient
+        let dt = setup.run.timeStepSize
+        let second = setup.methods.transient == .secondOrderImplicit && state.timeStep > 1
+        let uOld = state.uOld, uOldOld = state.uOldOld
+        let rho = state.rho, muL = state.mu
+        let gP = gradP
+        let kinds = bc.kind, uSpec = bc.uSpec, bU = state.bU
+        let wib = wallIndexOfBoundary, wif = wallIndexOfFace, muW = muWall
+        if turbulent && transposeSource.count != nC { transposeSource = [Vec3](repeating: .zero, count: nC) }
+        var diagV = [Double](repeating: 0, count: nC)
+        if bx.count != nC { bx = diagV; by = diagV; bz = diagV }
+
+        // Phase B: cells gather faces + boundary + volume terms
+        diagV.withUnsafeMutableBufferPointer { dv in bx.withUnsafeMutableBufferPointer { bxp in
+        by.withUnsafeMutableBufferPointer { byp in bz.withUnsafeMutableBufferPointer { bzp in
+        transposeSource.withUnsafeMutableBufferPointer { tsp in
+            let DV = SharedPtr(dv.baseAddress!), BX = SharedPtr(bxp.baseAddress!), BY = SharedPtr(byp.baseAddress!), BZ = SharedPtr(bzp.baseAddress!)
+            let TS = SharedPtr(tsp.baseAddress ?? UnsafeMutablePointer(bitPattern: 8)!)
+            Parallel.forEach(nC) { range in
+                for c in range {
+                    if solid[c] { DV[c] = 1; BX[c] = 0; BY[c] = 0; BZ[c] = 0; continue }
+                    var d = 0.0
+                    var b = Vec3.zero
+                    var tsum = Vec3.zero
+                    let uc = u[c]
+                    for k in m.cellFaceRange(c) {
+                        let f = Int(m.cellFaces[k])
+                        let own = Int(m.owner[f]) == c
+                        if f < nI {
+                            if iface[f] {
+                                let wi = Int(wif[f])
+                                let dn = abs(dot(m.faceAreas[f], m.faceCentres[f] - m.cellCentres[c])) / max(m.faceAreaMag[f], 1e-300)
+                                d += muW[wi] * m.faceAreaMag[f] / max(dn, 1e-300)
+                                continue
+                            }
+                            let other = own ? Int(m.neighbour[f]) : Int(m.owner[f])
+                            if solid[other] { continue }
+                            if own { d -= fUp[f]; b += fEx[f]; if turbulent { tsum += fTr[f] } }
+                            else { d -= fLo[f]; b -= fEx[f]; if turbulent { tsum -= fTr[f] } }
+                            continue
+                        }
+                        let bf = f - nI
+                        let F = flux[f]
+                        switch kinds[bf] {
+                        case .empty: continue
+                        case .wall:
+                            let wi = Int(wib[bf])
+                            let dif = (wi >= 0 ? muW[wi] : muEff[c]) * g.orthCoeff[f]
+                            d += dif
+                            b += dif * uSpec[bf]
+                        case .slipWall, .symmetry:
+                            // normal stress -2 mu |S|/dn (u.n) n: implicit isotropic part + explicit tangential remainder
+                            let n = normalized(m.faceAreas[f])
+                            let cs = 2 * muEff[c] * m.faceAreaMag[f] / g.normalDistance(f)
+                            d += cs
+                            b += cs * (uc - dot(uc, n) * n)
+                        case .velocityInlet, .farField:
+                            let a = muEff[c] * g.orthCoeff[f] + max(-F, 0)
+                            d += a
+                            b += a * bU[bf]
+                        case .pressureInlet:
+                            if F < 0 { d += -F; b += -F * bU[bf] }
+                        case .pressureOutlet, .outflow:
+                            if F < 0 {
+                                let n = normalized(m.faceAreas[f])
+                                d += -F; b += -F * (dot(uc, n) * n)
+                            }
+                        }
+                        if turbulent {
+                            let S = m.faceAreas[f]
+                            let t = gU0[c] * S.x + gU1[c] * S.y + gU2[c] * S.z
+                            let divu = gU0[c].x + gU1[c].y + gU2[c].z
+                            let wi = Int(wib[bf])
+                            tsum += (wi >= 0 ? muW[wi] : muEff[c]) * (t - divu * S)
+                        }
+                    }
+                    if turbulent {
+                        // under-relaxed explicit transpose source
+                        let v = 0.5 * tsum + 0.5 * TS[c]
+                        TS[c] = v
+                        b += v
+                    }
+                    // volume terms
+                    let vol = m.cellVolumes[c]
+                    b -= gP[c] * vol
+                    if grav != .zero { b += buoyancyDensity(c, rhoOp: rhoOp) * grav * vol }
+                    let zi = Int(m.cellZone[c])
+                    let zs = zoneSettings[zi]
+                    if let por = zs.porous {
+                        let speed = norm(uc)
+                        let ci = Vec3(muL[c] * por.viscousResistance[0] + 0.5 * rho[c] * por.inertialResistance[0] * speed,
+                                      muL[c] * por.viscousResistance[1] + 0.5 * rho[c] * por.inertialResistance[1] * speed,
+                                      muL[c] * por.viscousResistance[2] + 0.5 * rho[c] * por.inertialResistance[2] * speed) * vol
+                        let cav = (ci.x + ci.y + ci.z) / 3
+                        d += cav
+                        b -= (ci - Vec3(repeating: cav)) * uc
+                    }
+                    if zs.frameMotion {
+                        let a = normalized(Vec3(zs.rotationAxisDirection[0], zs.rotationAxisDirection[1], zs.rotationAxisDirection[2]))
+                        b -= rho[c] * cross(zs.rotationSpeed * a, uc) * vol   // absolute-velocity formulation: -rho (Omega x u)
+                    }
+                    let srcs = zoneMom[zi]
+                    if srcs.contains(where: { $0 != nil }) {
+                        let cc = m.cellCentres[c]
+                        for k in 0..<3 { if let fn = srcs[k] { b[k] += fn(cc) * vol } }
+                    }
+                    if transient {
+                        let rv = rho[c] * vol / dt
+                        if second { d += 1.5 * rv; b += rv * (2 * uOld[c] - 0.5 * uOldOld[c]) }
+                        else { d += rv; b += rv * uOld[c] }
+                    }
+                    DV[c] = d; BX[c] = b.x; BY[c] = b.y; BZ[c] = b.z
+                }
+            }
+        }}}}}
+
+        // Phase C: write the matrix
+        A.zero()
+        let diag = g.pattern.diag
         A.values.withUnsafeMutableBufferPointer { V in
-            // Interior faces
             for f in 0..<nI {
-                let P = Int(m.owner[f]), N = Int(m.neighbour[f])
-                if isInterfaceFace[f] {
-                    // wall seen from the fluid side
-                    let wi = Int(wallIndexOfFace[f])
-                    let fluid = isSolidCell[P] ? N : P
-                    let dn = abs(dot(m.faceAreas[f], m.faceCentres[f] - m.cellCentres[fluid])) / max(m.faceAreaMag[f], 1e-300)
-                    let dif = muWall[wi] * m.faceAreaMag[f] / max(dn, 1e-300)
-                    V[Int(diag[fluid])] += dif
-                    continue
-                }
-                if isSolidCell[P] { continue }
-                let F = flux[f]
-                let w = g.weight[f]
-                let mu = w * muEff[P] + (1 - w) * muEff[N]
-                let dif = mu * g.orthCoeff[f]
-                let aPN = -(dif + max(-F, 0))
-                let aNP = -(dif + max(F, 0))
-                V[Int(g.upper[f])] += aPN; V[Int(diag[P])] -= aPN
-                V[Int(g.lower[f])] += aNP; V[Int(diag[N])] -= aNP
-                var corr = Vec3.zero
-                if F != 0 && scheme != .firstOrderUpwind {
-                    let cf = m.faceCentres[f]
-                    let rP = cf - m.cellCentres[P], rN = cf - m.cellCentres[N]
-                    let dd = g.delta[f]
-                    for k in 0..<3 {
-                        corr[k] = F * convectionCorrection(scheme, bounded: limitMom, F: F, phiP: u[P][k], phiN: u[N][k],
-                                                           gradP: gU[k][P], gradN: gU[k][N], w: w, rP: rP, rN: rN, d: dd)
-                    }
-                }
-                var expl = -corr
-                if nonOrth {
-                    let T = g.nonOrth[f]
-                    for k in 0..<3 {
-                        let gf = w * gU[k][P] + (1 - w) * gU[k][N]
-                        expl[k] += mu * dot(gf, T)
-                    }
-                }
-                if turbulent {
-                    // div(mu ((grad u)^T - (div u) I)): the deviatoric transpose. Identical to
-                    // div(mu (grad u)^T) for divergence-free fields, but it does not feed the
-                    // grad-div of the (not yet converged) continuity error back into momentum.
-                    let S = m.faceAreas[f]
-                    var t = Vec3.zero
-                    var divu = 0.0
-                    for j in 0..<3 {
-                        let gj = w * gU[j][P] + (1 - w) * gU[j][N]
-                        t += gj * S[j]
-                        divu += gj[j]
-                    }
-                    let ts = mu * (t - divu * S)
-                    tsrc[P] += ts; tsrc[N] -= ts
-                }
-                bx[P] += expl.x; by[P] += expl.y; bz[P] += expl.z
-                bx[N] -= expl.x; by[N] -= expl.y; bz[N] -= expl.z
+                V[Int(g.upper[f])] += fUp[f]
+                V[Int(g.lower[f])] += fLo[f]
             }
-            // Boundary faces
-            for f in nI..<g.nFaces {
-                let bf = f - nI
-                let P = Int(m.owner[f])
-                if isSolidCell[P] { continue }
-                let F = flux[f]
-                switch bc.kind[bf] {
-                case .empty: continue
-                case .wall:
-                    let wi = Int(wallIndexOfBoundary[bf])
-                    let muW = wi >= 0 ? muWall[wi] : muEff[P]
-                    let dif = muW * g.orthCoeff[f]
-                    V[Int(diag[P])] += dif
-                    let uw = bc.uSpec[bf]
-                    bx[P] += dif * uw.x; by[P] += dif * uw.y; bz[P] += dif * uw.z
-                case .slipWall, .symmetry:
-                    // normal stress -2 mu |S|/dn (u.n) n: implicit isotropic part + explicit tangential remainder
-                    let n = normalized(m.faceAreas[f])
-                    let c = 2 * muEff[P] * m.faceAreaMag[f] / g.normalDistance(f)
-                    V[Int(diag[P])] += c
-                    let ut = u[P] - dot(u[P], n) * n
-                    bx[P] += c * ut.x; by[P] += c * ut.y; bz[P] += c * ut.z
-                case .velocityInlet, .farField:
-                    let ub = state.bU[bf]
-                    let a = muEff[P] * g.orthCoeff[f] + max(-F, 0)
-                    V[Int(diag[P])] += a
-                    bx[P] += a * ub.x; by[P] += a * ub.y; bz[P] += a * ub.z
-                case .pressureInlet:
-                    // inflow carries the boundary velocity (normal to the boundary)
-                    if F < 0 {
-                        let ub = state.bU[bf]
-                        V[Int(diag[P])] += -F
-                        bx[P] += -F * ub.x; by[P] += -F * ub.y; bz[P] += -F * ub.z
-                    }
-                case .pressureOutlet, .outflow:
-                    if F < 0 {
-                        // backflow normal to the boundary
-                        let n = normalized(m.faceAreas[f])
-                        let ub = dot(u[P], n) * n
-                        V[Int(diag[P])] += -F
-                        bx[P] += -F * ub.x; by[P] += -F * ub.y; bz[P] += -F * ub.z
-                    }
-                }
-            }
-            if turbulent {
-                for f in nI..<g.nFaces {
-                    let bf = f - nI
-                    let P = Int(m.owner[f])
-                    if isSolidCell[P] || bc.kind[bf] == .empty { continue }
-                    let S = m.faceAreas[f]
-                    var t = Vec3.zero
-                    var divu = 0.0
-                    for j in 0..<3 { t += gU[j][P] * S[j]; divu += gU[j][P][j] }
-                    let wi = Int(wallIndexOfBoundary[bf])
-                    let mu = wi >= 0 ? muWall[wi] : muEff[P]
-                    tsrc[P] += mu * (t - divu * S)
-                }
-            }
-            if turbulent {
-                // under-relax the explicit transpose source between iterations
-                let a = 0.5
-                if transposeSource.count != nC { transposeSource = tsrc }
-                for c in 0..<nC {
-                    let v = a * tsrc[c] + (1 - a) * transposeSource[c]
-                    transposeSource[c] = v
-                    bx[c] += v.x; by[c] += v.y; bz[c] += v.z
-                }
-            }
-            // Cell sources: pressure gradient, buoyancy, porous media, MRF, transient
-            let transient = isTransient
-            let dt = setup.run.timeStepSize
-            let second = setup.methods.transient == .secondOrderImplicit && state.timeStep > 1
-            for c in 0..<nC {
-                if isSolidCell[c] {
-                    let R = g.pattern.rowPtr
-                    for k in Int(R[c])..<Int(R[c + 1]) { V[k] = 0 }
-                    V[Int(diag[c])] = 1
-                    bx[c] = 0; by[c] = 0; bz[c] = 0
-                    continue
-                }
-                let vol = m.cellVolumes[c]
-                var src = -gradP[c] * vol
-                if grav != .zero { src += buoyancyDensity(c, rhoOp: rhoOp) * grav * vol }
-                let zs = zoneSettings[Int(m.cellZone[c])]
-                if let por = zs.porous {
-                    let speed = norm(u[c])
-                    let ci = Vec3(state.mu[c] * por.viscousResistance[0] + 0.5 * state.rho[c] * por.inertialResistance[0] * speed,
-                                  state.mu[c] * por.viscousResistance[1] + 0.5 * state.rho[c] * por.inertialResistance[1] * speed,
-                                  state.mu[c] * por.viscousResistance[2] + 0.5 * state.rho[c] * por.inertialResistance[2] * speed) * vol
-                    let cav = (ci.x + ci.y + ci.z) / 3
-                    V[Int(diag[c])] += cav
-                    src -= (ci - Vec3(repeating: cav)) * u[c]
-                }
-                if zs.frameMotion {
-                    let a = normalized(Vec3(zs.rotationAxisDirection[0], zs.rotationAxisDirection[1], zs.rotationAxisDirection[2]))
-                    // absolute-velocity formulation: -rho (Omega x u)
-                    src -= state.rho[c] * cross(zs.rotationSpeed * a, u[c]) * vol
-                }
-                if zs.momentumSource.contains(where: { $0 != .constant(0) }) {
-                    let cc = m.cellCentres[c]
-                    for k in 0..<3 {
-                        let q = zs.momentumSource[k]
-                        let v: Double
-                        switch q { case .constant(let d): v = d
-                        case .expression(let s): v = (try? Expr(s, named: exprs).value(x: cc.x, y: cc.y, z: cc.z, t: state.time)) ?? 0 }
-                        src[k] += v * vol
-                    }
-                }
-                if transient {
-                    let rv = state.rho[c] * vol / dt
-                    if second {
-                        V[Int(diag[c])] += 1.5 * rv
-                        src += rv * (2 * state.uOld[c] - 0.5 * state.uOldOld[c])
-                    } else {
-                        V[Int(diag[c])] += rv
-                        src += rv * state.uOld[c]
-                    }
-                }
-                bx[c] += src.x; by[c] += src.y; bz[c] += src.z
-            }
+            for c in 0..<nC { V[Int(diag[c])] = diagV[c] }
         }
 
         // Residuals (unrelaxed), Fluent scaling
         var r = [Double](repeating: 0, count: nC)
         var res = [Double](repeating: 0, count: 3)
-        let comps = mesh.isTwoDimensional ? 2 : 3
-        var xs: [[Double]] = (0..<3).map { k in u.map { $0[k] } }
+        var xs: [[Double]] = [u.map { $0.x }, u.map { $0.y }, u.map { $0.z }]
         let bs = [bx, by, bz]
-        for k in 0..<3 where !(mesh.isTwoDimensional && k == mesh.twoDimensionalAxis!) {
+        for k in 0..<3 where k != mesh.twoDimensionalAxis {
             let raw = A.residual(x: xs[k], b: bs[k], into: &r)
             let nrm = A.diagonalNorm(x: xs[k])
             res[k] = nrm > 1e-300 ? raw / nrm : raw
         }
-        _ = comps
 
         // Under-relaxation (shared matrix)
         var bsR = bs
-        A.values.withUnsafeMutableBufferPointer { V in
-            for c in 0..<nC {
-                let kd = Int(diag[c])
-                if isSolidCell[c] { aP[c] = 1; continue }
-                let d = V[kd]
-                V[kd] = d / urf
-                let extra = (1 - urf) / urf * d
-                bsR[0][c] += extra * u[c].x; bsR[1][c] += extra * u[c].y; bsR[2][c] += extra * u[c].z
-                aP[c] = V[kd]
-            }
+        for c in 0..<nC {
+            let kd = Int(diag[c])
+            if solid[c] { aP[c] = 1; continue }
+            let dd = A.values[kd]
+            A.values[kd] = dd / urf
+            let extra = (1 - urf) / urf * dd
+            bsR[0][c] += extra * u[c].x; bsR[1][c] += extra * u[c].y; bsR[2][c] += extra * u[c].z
+            aP[c] = A.values[kd]
         }
-        // Solve components
+        // Solve components (same matrix: AMG coarse operators refreshed once)
+        var first = true
         for k in 0..<3 {
             if let ax = mesh.twoDimensionalAxis, ax == k { for c in 0..<nC { xs[k][c] = 0 }; continue }
-            momSolver.solve(A, x: &xs[k], b: bsR[k])
+            momSolver.solve(A, x: &xs[k], b: bsR[k], sameMatrix: !first)
+            first = false
         }
         for c in 0..<nC { state.u[c] = Vec3(xs[0][c], xs[1][c], xs[2][c]) }
 
         // Pressure-correction coefficient D = V / a_P (SIMPLE) or V / (a_P - sum|a_nb|) (SIMPLEC)
         let simplec = setup.methods.coupling == .simplec
-        A.values.withUnsafeBufferPointer { V in
-            let R = g.pattern.rowPtr
-            for c in 0..<nC {
-                if isSolidCell[c] { Dcell[c] = 0; continue }
-                var a = aP[c]
-                if simplec {
-                    var off = 0.0
-                    for k in Int(R[c])..<Int(R[c + 1]) where k != Int(diag[c]) { off += V[k] }
-                    a = max(a + off, 0.05 * a)
+        let apL = aP
+        Dcell.withUnsafeMutableBufferPointer { dp in
+            A.values.withUnsafeBufferPointer { V in
+                let DP = SharedPtr(dp.baseAddress!), VV = ConstPtr(V.baseAddress!)
+                let R = g.pattern.rowPtr
+                Parallel.forEach(nC) { range in
+                    for c in range {
+                        if solid[c] { DP[c] = 0; continue }
+                        var a = apL[c]
+                        if simplec {
+                            var off = 0.0
+                            for k in Int(R[c])..<Int(R[c + 1]) where k != Int(diag[c]) { off += VV[k] }
+                            a = max(a + off, 0.05 * a)
+                        }
+                        DP[c] = m.cellVolumes[c] / a
+                    }
                 }
-                Dcell[c] = m.cellVolumes[c] / a
             }
         }
         return res
@@ -592,32 +608,43 @@ public final class PressureBasedSolver: @unchecked Sendable {
         let second = setup.methods.transient == .secondOrderImplicit && state.timeStep > 1
         let haveOld = !massFluxPrev.isEmpty && !uPrev.isEmpty
         var flux = state.massFlux
-        for f in 0..<nI {
-            let P = Int(m.owner[f]), N = Int(m.neighbour[f])
-            if isInterfaceFace[f] || isSolidCell[P] || isSolidCell[N] { flux[f] = 0; continue }
-            let w = g.weight[f]
-            let S = m.faceAreas[f]
-            let rhof = w * state.rho[P] + (1 - w) * state.rho[N]
-            let ubar = w * state.u[P] + (1 - w) * state.u[N]
-            let Df = w * Dcell[P] + (1 - w) * Dcell[N]
-            let gpbar = w * gradP[P] + (1 - w) * gradP[N]
-            let oc = g.orthCoeff[f]
-            var mf = rhof * (dot(ubar, S) - Df * oc * ((state.p[N] - state.p[P]) - dot(gpbar, g.delta[f])))
-            if haveOld && urf < 1 {
-                let ubarOld = w * uPrev[P] + (1 - w) * uPrev[N]
-                mf += (1 - urf) * (massFluxPrev[f] - rhof * dot(ubarOld, S))
-            }
-            if transient && !state.massFluxOld.isEmpty {
-                let c = rhof * Df / dt
-                let uo = w * state.uOld[P] + (1 - w) * state.uOld[N]
-                if second {
-                    let uoo = w * state.uOldOld[P] + (1 - w) * state.uOldOld[N]
-                    mf += c * (2 * (state.massFluxOld[f] / rhof - dot(uo, S)) - 0.5 * (state.massFluxOldOld[f] / rhof - dot(uoo, S)))
-                } else {
-                    mf += c * (state.massFluxOld[f] / rhof - dot(uo, S))
+        do {
+            let rho = state.rho, u = state.u, p = state.p, D = Dcell, gP = gradP
+            let solid = isSolidCell, iface = isInterfaceFace
+            let uPv = uPrev, mPrev = massFluxPrev
+            let uO = state.uOld, uOO = state.uOldOld, mO = state.massFluxOld, mOO = state.massFluxOldOld
+            let haveT = transient && !mO.isEmpty
+            flux.withUnsafeMutableBufferPointer { fp in
+                let FL = SharedPtr(fp.baseAddress!)
+                Parallel.forEach(nI) { range in
+                    for f in range {
+                        let P = Int(m.owner[f]), N = Int(m.neighbour[f])
+                        if iface[f] || solid[P] || solid[N] { FL[f] = 0; continue }
+                        let w = g.weight[f]
+                        let S = m.faceAreas[f]
+                        let rhof = w * rho[P] + (1 - w) * rho[N]
+                        let ubar = w * u[P] + (1 - w) * u[N]
+                        let Df = w * D[P] + (1 - w) * D[N]
+                        let gpbar = w * gP[P] + (1 - w) * gP[N]
+                        var mf = rhof * (dot(ubar, S) - Df * g.orthCoeff[f] * ((p[N] - p[P]) - dot(gpbar, g.delta[f])))
+                        if haveOld && urf < 1 {
+                            let ubarOld = w * uPv[P] + (1 - w) * uPv[N]
+                            mf += (1 - urf) * (mPrev[f] - rhof * dot(ubarOld, S))
+                        }
+                        if haveT {
+                            let c = rhof * Df / dt
+                            let uo = w * uO[P] + (1 - w) * uO[N]
+                            if second {
+                                let uoo = w * uOO[P] + (1 - w) * uOO[N]
+                                mf += c * (2 * (mO[f] / rhof - dot(uo, S)) - 0.5 * (mOO[f] / rhof - dot(uoo, S)))
+                            } else {
+                                mf += c * (mO[f] / rhof - dot(uo, S))
+                            }
+                        }
+                        FL[f] = mf
+                    }
                 }
             }
-            flux[f] = mf
         }
         // Boundaries
         var outflowFaces: [Int] = []
@@ -662,57 +689,65 @@ public final class PressureBasedSolver: @unchecked Sendable {
         let m = mesh, g = geo
         let nI = g.nInternal, nC = g.nCells
         let diag = g.pattern.diag
-        var rhs = [Double](repeating: 0, count: nC)
-        var imbalance = 0.0
-        // net outflow per cell
-        for f in 0..<nI {
-            let F = state.massFlux[f]
-            rhs[Int(m.owner[f])] -= F
-            rhs[Int(m.neighbour[f])] += F
-        }
-        for f in nI..<g.nFaces { rhs[Int(m.owner[f])] -= state.massFlux[f] }
-        if isTransient {
-            // variable density: rho change contributes to continuity
-            let dt = setup.run.timeStepSize
-            if !state.rhoOld.isEmpty {
-                for c in 0..<nC where !isSolidCell[c] {
-                    rhs[c] -= (state.rho[c] - state.rhoOld[c]) * m.cellVolumes[c] / dt
+        let solid = isSolidCell, iface = isInterfaceFace
+        let flux = state.massFlux, rho = state.rho, D = Dcell
+        let kinds = bc.kind, uSpec = bc.uSpec
+
+        // Face coefficients rho_f D_f |S|^2/(S.d) (pressure faces: Dirichlet p' = 0)
+        var faceCoeff = [Double](repeating: 0, count: g.nFaces)
+        faceCoeff.withUnsafeMutableBufferPointer { fc in
+            let FC = SharedPtr(fc.baseAddress!)
+            Parallel.forEach(g.nFaces) { range in
+                for f in range {
+                    let P = Int(m.owner[f])
+                    if f < nI {
+                        let N = Int(m.neighbour[f])
+                        if iface[f] || solid[P] || solid[N] { continue }
+                        let w = g.weight[f]
+                        FC[f] = (w * rho[P] + (1 - w) * rho[N]) * (w * D[P] + (1 - w) * D[N]) * g.orthCoeff[f]
+                    } else {
+                        if solid[P] { continue }
+                        let k = kinds[f - nI]
+                        if k == .pressureOutlet || k == .pressureInlet || (k == .farField && dot(uSpec[f - nI], m.faceAreas[f]) >= 0) {
+                            FC[f] = rho[P] * D[P] * g.orthCoeff[f]
+                        }
+                    }
                 }
             }
         }
-        for c in 0..<nC where !isSolidCell[c] { imbalance += abs(rhs[c]) }
+        var anyDirichlet = false
+        for f in nI..<g.nFaces where faceCoeff[f] != 0 { anyDirichlet = true; break }
+
+        // Net outflow (rhs) and diagonal per cell, gathered over each cell's faces
+        var rhs = [Double](repeating: 0, count: nC)
+        var dgl = [Double](repeating: 0, count: nC)
+        let transientRho = isTransient && !state.rhoOld.isEmpty
+        let rhoOld = state.rhoOld, dt = setup.run.timeStepSize
+        rhs.withUnsafeMutableBufferPointer { rp in dgl.withUnsafeMutableBufferPointer { dp in
+            let RH = SharedPtr(rp.baseAddress!), DG = SharedPtr(dp.baseAddress!)
+            Parallel.forEach(nC) { range in
+                for c in range {
+                    if solid[c] { RH[c] = 0; DG[c] = 1; continue }
+                    var r = 0.0, d = 0.0
+                    for k in m.cellFaceRange(c) {
+                        let f = Int(m.cellFaces[k])
+                        let F = flux[f]
+                        r += Int(m.owner[f]) == c ? -F : F
+                        d += faceCoeff[f]
+                    }
+                    if transientRho { r -= (rho[c] - rhoOld[c]) * m.cellVolumes[c] / dt }
+                    RH[c] = r; DG[c] = d
+                }
+            }
+        }}
+        let imbalance = Parallel.sum(nC) { range in var s = 0.0; for c in range where !solid[c] { s += abs(rhs[c]) }; return s }
 
         Ap.zero()
-        var faceCoeff = [Double](repeating: 0, count: g.nFaces)
-        var anyDirichlet = false
         Ap.values.withUnsafeMutableBufferPointer { V in
-            for f in 0..<nI {
-                let P = Int(m.owner[f]), N = Int(m.neighbour[f])
-                if isInterfaceFace[f] || isSolidCell[P] || isSolidCell[N] { continue }
-                let w = g.weight[f]
-                let rhof = w * state.rho[P] + (1 - w) * state.rho[N]
-                let Df = w * Dcell[P] + (1 - w) * Dcell[N]
-                let c = rhof * Df * g.orthCoeff[f]
-                faceCoeff[f] = c
-                V[Int(diag[P])] += c; V[Int(diag[N])] += c
-                V[Int(g.upper[f])] -= c; V[Int(g.lower[f])] -= c
+            for f in 0..<nI where faceCoeff[f] != 0 {
+                V[Int(g.upper[f])] -= faceCoeff[f]; V[Int(g.lower[f])] -= faceCoeff[f]
             }
-            for f in nI..<g.nFaces {
-                let bf = f - nI
-                let P = Int(m.owner[f])
-                if isSolidCell[P] { continue }
-                let k = bc.kind[bf]
-                let pressureFace = k == .pressureOutlet || k == .pressureInlet || (k == .farField && dot(bc.uSpec[bf], m.faceAreas[f]) >= 0)
-                if pressureFace {
-                    let c = state.rho[P] * Dcell[P] * g.orthCoeff[f]
-                    faceCoeff[f] = c
-                    V[Int(diag[P])] += c
-                    anyDirichlet = true
-                }
-            }
-            for c in 0..<nC where isSolidCell[c] {
-                V[Int(diag[c])] = 1; rhs[c] = 0
-            }
+            for c in 0..<nC { V[Int(diag[c])] = dgl[c] }
             if !anyDirichlet {
                 // Soft pin of the reference cell removes the constant null space.
                 let k = Int(diag[refCell])
@@ -722,36 +757,44 @@ public final class PressureBasedSolver: @unchecked Sendable {
         for c in 0..<nC { pCorr[c] = 0 }
         pSolver.solve(Ap, x: &pCorr, b: rhs)
 
-        // Optional extra non-orthogonal correctors are handled by the caller.
-        // Correct face fluxes
-        for f in 0..<nI where faceCoeff[f] != 0 {
-            state.massFlux[f] -= faceCoeff[f] * (pCorr[Int(m.neighbour[f])] - pCorr[Int(m.owner[f])])
-        }
+        // Correct face fluxes; boundary p' values for the gradient
+        let pc = pCorr
         var pcb = [Double](repeating: 0, count: m.nBoundaryFaces)
-        for f in nI..<g.nFaces {
-            let bf = f - nI
-            let P = Int(m.owner[f])
-            if faceCoeff[f] != 0 {
-                state.massFlux[f] += faceCoeff[f] * pCorr[P]
-                pcb[bf] = 0
-            } else {
-                pcb[bf] = pCorr[P]
+        state.massFlux.withUnsafeMutableBufferPointer { mp in pcb.withUnsafeMutableBufferPointer { bp in
+            let MF = SharedPtr(mp.baseAddress!), PB = SharedPtr(bp.baseAddress ?? UnsafeMutablePointer(bitPattern: 8)!)
+            Parallel.forEach(g.nFaces) { range in
+                for f in range {
+                    let c = faceCoeff[f]
+                    if f < nI {
+                        if c != 0 { MF[f] -= c * (pc[Int(m.neighbour[f])] - pc[Int(m.owner[f])]) }
+                    } else {
+                        let P = Int(m.owner[f])
+                        if c != 0 { MF[f] += c * pc[P]; PB[f - nI] = 0 } else { PB[f - nI] = pc[P] }
+                    }
+                }
             }
-        }
-        // Cell velocity correction
-        if correctVelocity {
-            Gradient.compute(g, pCorr, boundary: pcb, scheme: setup.methods.gradient, into: &gradPc)
-            for c in 0..<nC where !isSolidCell[c] {
-                state.u[c] -= Dcell[c] * gradPc[c]
-                if let ax = m.twoDimensionalAxis { state.u[c][ax] = 0 }
+        }}
+        // Cell velocity and pressure correction
+        if correctVelocity { Gradient.compute(g, pCorr, boundary: pcb, scheme: setup.methods.gradient, into: &gradPc) }
+        let gpc = gradPc
+        let ax2 = m.twoDimensionalAxis
+        let shift = anyDirichlet ? 0.0 : state.p[refCell] + urfP * pc[refCell]
+        state.u.withUnsafeMutableBufferPointer { up in state.p.withUnsafeMutableBufferPointer { pp in
+            let U = SharedPtr(up.baseAddress!), PP = SharedPtr(pp.baseAddress!)
+            Parallel.forEach(nC) { range in
+                for c in range {
+                    if !solid[c] {
+                        if correctVelocity {
+                            var v = U[c] - D[c] * gpc[c]
+                            if let ax = ax2 { v[ax] = 0 }
+                            U[c] = v
+                        }
+                        PP[c] += urfP * pc[c]
+                    }
+                    PP[c] -= shift
+                }
             }
-        }
-        // Pressure update
-        for c in 0..<nC where !isSolidCell[c] { state.p[c] += urfP * pCorr[c] }
-        if !anyDirichlet {
-            let shift = state.p[refCell]
-            for c in 0..<nC { state.p[c] -= shift }
-        }
+        }}
         return imbalance
     }
 
@@ -909,20 +952,31 @@ public final class PressureBasedSolver: @unchecked Sendable {
     // MARK: Iteration
 
     /// One outer SIMPLE-family iteration. Returns the residuals recorded.
+    /// Wall-clock seconds per phase (CURLEW_PROFILE=1 prints a summary from the CLI).
+    public static var profile: [String: Double] = [:]
+    static let profiling = ProcessInfo.processInfo.environment["CURLEW_PROFILE"] != nil
+    @inline(__always) func timed<T>(_ name: String, _ body: () -> T) -> T {
+        guard PressureBasedSolver.profiling else { return body() }
+        let t0 = DispatchTime.now().uptimeNanoseconds
+        let r = body()
+        PressureBasedSolver.profile[name, default: 0] += Double(DispatchTime.now().uptimeNanoseconds - t0) * 1e-9
+        return r
+    }
+
     @discardableResult
     public func iterate() -> [String: Double] {
         let urfU = setup.controls.urf.momentum
         let urfP = setup.methods.coupling == .simple ? setup.controls.urf.pressure : max(setup.controls.urf.pressure, 1.0)
-        computeGradients()
-        updateProperties()
-        if setup.models.viscous.isTurbulent { updateWallFunctions() } else { updateLaminarWalls() }
+        timed("gradients") { computeGradients() }
+        timed("properties") { updateProperties() }
+        timed("walls") { if setup.models.viscous.isTurbulent { updateWallFunctions() } else { updateLaminarWalls() } }
         uPrev = state.u
         massFluxPrev = state.massFlux
-        let resU = solveMomentum(urf: urfU)
-        computeMassFluxes(urf: urfU)
+        let resU = timed("momentum") { solveMomentum(urf: urfU) }
+        timed("fluxes") { computeMassFluxes(urf: urfU) }
         let piso = setup.methods.coupling == .piso
         var uBefore = state.u
-        let imbalance = correctPressure(urfP: piso ? 1.0 : urfP)
+        let imbalance = timed("pressure") { correctPressure(urfP: piso ? 1.0 : urfP) }
         if piso {
             for _ in 0..<max(setup.methods.pisoCorrectors, 1) {
                 var du = state.u
@@ -932,16 +986,16 @@ public final class PressureBasedSolver: @unchecked Sendable {
                 _ = correctPressure(urfP: 1)
             }
         }
-        updateFlowBoundaries()
+        timed("boundaries") { updateFlowBoundaries() }
 
         var r: [String: Double] = [:]
         r["continuity"] = residuals.scaleContinuity(imbalance)
         let vnames = ["x-velocity", "y-velocity", "z-velocity"]
         for k in 0..<3 where k != mesh.twoDimensionalAxis { r[vnames[k]] = resU[k] }
-        if setup.models.energy { r["energy"] = solveEnergy() }
+        if setup.models.energy { r["energy"] = timed("energy") { solveEnergy() } }
         if setup.models.viscous.isTurbulent {
-            computeGradients()
-            for (k, v) in solveTurbulence() { r[k] = v }
+            timed("gradients") { computeGradients() }
+            for (k, v) in timed("turbulence") { solveTurbulence() } { r[k] = v }
         }
         if !setup.models.passiveScalars.isEmpty {
             for (i, v) in solveScalars().enumerated() { r[setup.models.passiveScalars[i].name] = v }

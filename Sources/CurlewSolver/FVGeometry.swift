@@ -116,34 +116,57 @@ public enum Gradient {
                                scheme: GradientScheme, into grad: inout [Vec3]) {
         let m = g.mesh
         if grad.count != g.nCells { grad = [Vec3](repeating: .zero, count: g.nCells) }
-        for i in 0..<g.nCells { grad[i] = .zero }
         let nI = g.nInternal
-        switch scheme {
-        case .leastSquares:
-            for f in 0..<nI {
-                let P = Int(m.owner[f]), N = Int(m.neighbour[f])
-                let dphi = phi[N] - phi[P]
-                grad[P] += g.lsOwner[f] * dphi
-                grad[N] -= g.lsNeighbour[f] * dphi
+        // Cell-parallel gather over each cell's faces (deterministic, no write conflicts).
+        m.cellFaceOffsets.withUnsafeBufferPointer { cfo in
+        m.cellFaces.withUnsafeBufferPointer { cf in
+        m.owner.withUnsafeBufferPointer { own in
+        m.neighbour.withUnsafeBufferPointer { nei in
+        phi.withUnsafeBufferPointer { ph in
+        boundary.withUnsafeBufferPointer { bd in
+        g.lsOwner.withUnsafeBufferPointer { lso in
+        g.lsNeighbour.withUnsafeBufferPointer { lsn in
+        m.faceAreas.withUnsafeBufferPointer { fa in
+        g.weight.withUnsafeBufferPointer { wt in
+        m.cellVolumes.withUnsafeBufferPointer { vol in
+        g.isEmptyFace.withUnsafeBufferPointer { emp in
+        grad.withUnsafeMutableBufferPointer { gr in
+            let CFO = ConstPtr(cfo.baseAddress!), CF = ConstPtr(cf.baseAddress!), OWN = ConstPtr(own.baseAddress!)
+            let NEI = ConstPtr(nei.baseAddress ?? UnsafePointer(bitPattern: 8)!), PH = ConstPtr(ph.baseAddress!)
+            let BD = ConstPtr(bd.baseAddress ?? UnsafePointer(bitPattern: 8)!), LSO = ConstPtr(lso.baseAddress!)
+            let LSN = ConstPtr(lsn.baseAddress ?? UnsafePointer(bitPattern: 8)!), FA = ConstPtr(fa.baseAddress!)
+            let WT = ConstPtr(wt.baseAddress!), VOL = ConstPtr(vol.baseAddress!), EMP = ConstPtr(emp.baseAddress!)
+            let GR = SharedPtr(gr.baseAddress!)
+            Parallel.forEach(g.nCells) { range in
+                for c in range {
+                    var s = Vec3.zero
+                    let pc = PH[c]
+                    for k in Int(CFO[c])..<Int(CFO[c + 1]) {
+                        let f = Int(CF[k])
+                        let isOwner = Int(OWN[f]) == c
+                        switch scheme {
+                        case .leastSquares:
+                            if f < nI {
+                                if isOwner { s += LSO[f] * (PH[Int(NEI[f])] - pc) }
+                                else { s += LSN[f] * (PH[Int(OWN[f])] - pc) }
+                            } else {
+                                s += LSO[f] * (BD[f - nI] - pc)
+                            }
+                        case .greenGauss:
+                            if f < nI {
+                                let w = WT[f]
+                                let P = Int(OWN[f]), N = Int(NEI[f])
+                                let pf = w * PH[P] + (1 - w) * PH[N]
+                                s += isOwner ? FA[f] * pf : -(FA[f] * pf)
+                            } else {
+                                s += FA[f] * (EMP[f] ? pc : BD[f - nI])
+                            }
+                        }
+                    }
+                    GR[c] = scheme == .greenGauss ? s / VOL[c] : s
+                }
             }
-            for f in nI..<g.nFaces {
-                let P = Int(m.owner[f])
-                grad[P] += g.lsOwner[f] * (boundary[f - nI] - phi[P])
-            }
-        case .greenGauss:
-            for f in 0..<nI {
-                let P = Int(m.owner[f]), N = Int(m.neighbour[f])
-                let w = g.weight[f]
-                let pf = w * phi[P] + (1 - w) * phi[N]
-                let flux = m.faceAreas[f] * pf
-                grad[P] += flux; grad[N] -= flux
-            }
-            for f in nI..<g.nFaces {
-                let P = Int(m.owner[f])
-                grad[P] += m.faceAreas[f] * (g.isEmptyFace[f] ? phi[P] : boundary[f - nI])
-            }
-            for c in 0..<g.nCells { grad[c] /= m.cellVolumes[c] }
-        }
+        }}}}}}}}}}}}}
     }
 
     /// Vector-field gradient as three component gradients.
