@@ -58,6 +58,9 @@ struct TransportEquation {
     var fixedValue: [Double]? = nil
     /// Disable convection (pure diffusion/conduction).
     var convection = true
+    /// Strictly positive quantity (k, omega, epsilon, nu~): Patankar source linearisation.
+    var positive = false
+    var floor = 1e-20
 }
 
 struct TransportAssembler {
@@ -81,7 +84,8 @@ struct TransportAssembler {
                 V[Int(geo.upper[f])] += aPN; V[Int(diag[P])] -= aPN
                 V[Int(geo.lower[f])] += aNP; V[Int(diag[N])] -= aNP
                 // deferred higher-order convection
-                if F != 0 && e.scheme != .firstOrderUpwind {
+                let pinned = e.fixedMask.map { $0[P] || $0[N] } ?? false
+                if F != 0 && e.scheme != .firstOrderUpwind && !pinned {
                     let cf = m.faceCentres[f]
                     let corr = F * convectionCorrection(e.scheme, bounded: e.bounded, F: F, phiP: e.phi[P], phiN: e.phi[N],
                                                         gradP: e.grad[P], gradN: e.grad[N], w: geo.weight[f],
@@ -129,14 +133,16 @@ struct TransportAssembler {
                 V[Int(diag[c])] += e.Sp[c]
                 b[c] += e.Su[c]
             }
-            if let mask = e.fixedMask, let val = e.fixedValue {
-                let R = geo.pattern.rowPtr
-                for c in 0..<nC where mask[c] {
-                    for k in Int(R[c])..<Int(R[c + 1]) { V[k] = 0 }
-                    V[Int(diag[c])] = 1
-                    b[c] = val[c]
+            if e.positive {
+                // negative net explicit source -> implicit sink keeps the solution positive
+                for c in 0..<nC where b[c] < 0 {
+                    V[Int(diag[c])] += -b[c] / max(e.phi[c], e.floor)
+                    b[c] = 0
                 }
             }
+        }
+        if let mask = e.fixedMask, let val = e.fixedValue {
+            fixRows(A, &b, mask: mask, values: val)
         }
         // Scaled residual of the unrelaxed system
         var r = [Double](repeating: 0, count: nC)
@@ -175,6 +181,32 @@ struct TransportAssembler {
                 let h = e.bc.coeff[bf], g = max(e.gamma[f], 1e-300) / geo.normalDistance(f)
                 e.bPhi[bf] = (h * e.bc.value[bf] + g * e.phi[P]) / max(h + g, 1e-300)
             }
+        }
+    }
+}
+
+/// Pin masked rows to `values` at the row's own diagonal scale (keeps AMG
+/// aggregation well-scaled) and eliminate the pinned unknowns from all other rows.
+func fixRows(_ A: SparseMatrix, _ b: inout [Double], mask: [Bool], values: [Double]) {
+    let pat = A.pattern
+    let n = pat.n
+    let R = pat.rowPtr, C = pat.colIdx, D = pat.diag
+    A.values.withUnsafeMutableBufferPointer { V in
+        var meanDiag = 0.0, cnt = 0.0
+        for c in 0..<n where !mask[c] { meanDiag += abs(V[Int(D[c])]); cnt += 1 }
+        meanDiag = cnt > 0 ? meanDiag / cnt : 1
+        for r in 0..<n where !mask[r] {
+            for k in Int(R[r])..<Int(R[r + 1]) {
+                let j = Int(C[k])
+                if j != r && mask[j] { b[r] -= V[k] * values[j]; V[k] = 0 }
+            }
+        }
+        for c in 0..<n where mask[c] {
+            var d = abs(V[Int(D[c])])
+            if !(d > 1e-300) || !d.isFinite { d = meanDiag }
+            for k in Int(R[c])..<Int(R[c + 1]) { V[k] = 0 }
+            V[Int(D[c])] = d
+            b[c] = d * values[c]
         }
     }
 }

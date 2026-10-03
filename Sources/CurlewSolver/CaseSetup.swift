@@ -245,7 +245,8 @@ public struct SolutionMethods: Codable, Sendable, Equatable {
     public var gradient: GradientScheme = .leastSquares
     public var pressure: PressureInterpolation = .secondOrder
     public var momentum: ConvectionScheme = .secondOrderUpwind
-    public var turbulence: ConvectionScheme = .secondOrderUpwind
+    /// Fluent's default for k/omega/epsilon is first-order upwind.
+    public var turbulence: ConvectionScheme = .firstOrderUpwind
     public var energy: ConvectionScheme = .secondOrderUpwind
     public var scalars: ConvectionScheme = .secondOrderUpwind
     public var transient: TransientFormulation = .secondOrderImplicit

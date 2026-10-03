@@ -133,7 +133,7 @@ public final class BoundaryData: @unchecked Sendable {
                     if s.turbulenceSpecification == .intensityAndViscosityRatio {
                         let nuT = s.turbulentViscosityRatio * mu / rho
                         let om = kk / max(nuT, 1e-300)
-                        return (kk, om, cmu * kk * om, nuT * 1.0)
+                        return (kk, om, cmu * kk * om, SA.nuTildeFor(nuT: nuT, nu: mu / rho))
                     }
                     let om = sqrt(kk) / (pow(cmu, 0.25) * max(l, 1e-12))
                     let nutSA = sqrt(1.5) * max(speed, 1e-10) * I * l
