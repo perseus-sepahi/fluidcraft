@@ -26,6 +26,10 @@ extension Workspace {
       /report/surface-average <field> <zone> area-weighted average
       /display/contour <field>               contours on the default surfaces
       /display/vectors | /display/mesh | /display/pathlines
+      /display/save-picture <path.png>       PNG of the graphics window (with legend)
+      /surface/plane <name> <x|y|z> <value>  create a cut plane
+      /display/set/surfaces <names...>       surfaces used by contours/vectors
+      /plot/xy <field> x0 y0 z0 x1 y1 z1     XY plot along a line
       /tutorial <id>                         \(TutorialCatalog.all.map(\.id).joined(separator: ", "))
     """
 
@@ -148,6 +152,14 @@ extension Workspace {
                                             .initialization, .runCalculation, .contours, .vectors, .pathlines, .reports, .validation, .xyPlot].first(where: { $0.title.lowercased().replacingOccurrences(of: " ", with: "-") == a.lowercased() }) {
                 selection = item
             }
+        case "/plot/xy":
+            // /plot/xy <field> x0 y0 z0 x1 y1 z1
+            let nums = parts.dropFirst().compactMap(Double.init)
+            guard let f = arg(0), nums.count == 6, let post else { log("usage: /plot/xy <field> x0 y0 z0 x1 y1 z1", .warning); return }
+            let pts = post.lineSample(f, from: Vec3(nums[0], nums[1], nums[2]), to: Vec3(nums[3], nums[4], nums[5]), points: 300)
+            xyPlot = XYPlotData(title: f, xLabel: "Distance along line (m)", yLabel: f,
+                                series: [.init(name: f, points: pts.enumerated().map { XYPoint(id: $0.offset, x: $0.element.0, y: $0.element.1) })])
+            graphicsTab = .xy
         case "/quit":
             NSApp.terminate(nil)
         case "/tutorial":

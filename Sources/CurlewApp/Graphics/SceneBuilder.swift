@@ -75,10 +75,11 @@ enum SceneBuilder {
             sc.title = "Pathlines from \(seedZone) coloured by \(settings.field)"
         }
         // context outline: walls drawn flat & translucent edges
-        if settings.showOutline && settings.mode != .contours || (settings.mode == .contours && !mesh.isTwoDimensional && settings.showOutline) {
-            var outline = PostProcessor.meshSurface(mesh, zones: mesh.boundaryZones.filter { $0.kind == .wall }.map(\.name))
+        if settings.showOutline && (settings.mode != .contours || !mesh.isTwoDimensional) {
+            // 3D: all boundaries (drawn as feature edges); 2D: the domain (drawn as a translucent backdrop)
+            var outline = mesh.isTwoDimensional ? PostProcessor.meshSurface(mesh, zones: [])
+                : PostProcessor.meshSurface(mesh, zones: mesh.boundaryZones.filter { $0.kind != .empty }.map(\.name))
             outline.name = "outline"
-            if mesh.isTwoDimensional && settings.mode != .contours { outline = PostProcessor.meshSurface(mesh, zones: []) }
             if !outline.isEmpty { sc.flatSurfaces = [outline] }
         }
         // range

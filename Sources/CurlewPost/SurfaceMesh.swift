@@ -11,6 +11,8 @@ public struct SurfaceMesh: Sendable {
     public var triangles: [UInt32] = []
     /// Polygon outline segments (pairs of vertex indices) for mesh-edge display.
     public var edges: [UInt32] = []
+    /// Feature edges only (open boundaries and creases sharper than ~30°) for outline display.
+    public var featureEdges: [UInt32] = []
     /// Source cell (cut surfaces) or face (zone surfaces) per vertex, for probing.
     public var vertexSource: [Int32] = []
     public init(name: String) { self.name = name }

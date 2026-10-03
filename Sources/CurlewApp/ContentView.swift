@@ -215,6 +215,49 @@ struct GraphicsOverlay: View {
     }
 }
 
+extension Legend {
+    /// Draw the colour legend and title onto an exported picture (CoreGraphics).
+    static func composite(_ img: CGImage, scene: SceneContent, dark: Bool) -> CGImage? {
+        guard let field = scene.colorField else { return img }
+        let w = img.width, h = img.height
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+        let scale = CGFloat(h) / 900
+        let barW = 22 * max(scale, 0.6), barH = CGFloat(h) * 0.45
+        let x0 = 24 * max(scale, 0.6), y0 = CGFloat(h) - barH - 40 * max(scale, 0.6)
+        let n = 64
+        for i in 0..<n {
+            var t = (Double(i) + 0.5) / Double(n)
+            if scene.bands > 0 { t = (floor(t * Double(scene.bands)) + 0.5) / Double(scene.bands) }
+            let c = NSColor(scene.colormap.color(at: t)).usingColorSpace(.deviceRGB) ?? .gray
+            ctx.setFillColor(red: c.redComponent, green: c.greenComponent, blue: c.blueComponent, alpha: 1)
+            ctx.fill(CGRect(x: x0, y: y0 + barH * CGFloat(i) / CGFloat(n), width: barW, height: barH / CGFloat(n) + 0.5))
+        }
+        ctx.setStrokeColor(gray: 0.3, alpha: 1)
+        ctx.stroke(CGRect(x: x0, y: y0, width: barW, height: barH))
+        let fontSize = max(11 * max(scale, 0.6), 9)
+        let textColor: NSColor = dark ? .white : .black
+        let nsctx = NSGraphicsContext(cgContext: ctx, flipped: false)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = nsctx
+        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular), .foregroundColor: textColor]
+        for i in 0...10 {
+            let v = Double(scene.range.lowerBound) + Double(scene.range.upperBound - scene.range.lowerBound) * Double(i) / 10
+            let str = NSAttributedString(string: String(format: "%.3e", v), attributes: attrs)
+            str.draw(at: CGPoint(x: x0 + barW + 6, y: y0 + barH * CGFloat(i) / 10 - fontSize * 0.5))
+        }
+        let tattrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: fontSize * 1.15, weight: .semibold), .foregroundColor: textColor]
+        NSAttributedString(string: field, attributes: tattrs).draw(at: CGPoint(x: x0, y: y0 - fontSize * 2))
+        if !scene.title.isEmpty {
+            let title = NSAttributedString(string: scene.title, attributes: [.font: NSFont.systemFont(ofSize: fontSize), .foregroundColor: textColor.withAlphaComponent(0.7)])
+            title.draw(at: CGPoint(x: CGFloat(w) - title.size().width - 16, y: 12))
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        return ctx.makeImage()
+    }
+}
+
 struct Legend: View {
     var field: String
     var range: ClosedRange<Float>

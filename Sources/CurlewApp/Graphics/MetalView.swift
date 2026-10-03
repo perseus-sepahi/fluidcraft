@@ -108,7 +108,8 @@ final class ViewController: ObservableObject {
         let img = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
                           space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
                           provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)!
-        let bmp = NSBitmapImageRep(cgImage: img)
+        let annotated = Legend.composite(img, scene: r.scene, dark: r.dark) ?? img
+        let bmp = NSBitmapImageRep(cgImage: annotated)
         try bmp.representation(using: .png, properties: [:])?.write(to: url)
     }
 }

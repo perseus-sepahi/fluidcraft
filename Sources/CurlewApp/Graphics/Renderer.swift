@@ -100,6 +100,8 @@ final class GPUObject {
     var edgeCount = 0
     var segments: MTLBuffer?
     var segmentCount = 0
+    var features: MTLBuffer?
+    var featureCount = 0
     var flat: Bool
     init?(device: MTLDevice, surface s: SurfaceMesh, flat: Bool) {
         guard !s.positions.isEmpty,
@@ -113,6 +115,9 @@ final class GPUObject {
         }
         if !s.edges.isEmpty {
             edges = device.makeBuffer(bytes: s.edges, length: s.edges.count * 4); edgeCount = s.edges.count
+        }
+        if !s.featureEdges.isEmpty {
+            features = device.makeBuffer(bytes: s.featureEdges, length: s.featureEdges.count * 4); featureCount = s.featureEdges.count
         }
     }
     init?(device: MTLDevice, lines l: LineSet) {
@@ -322,7 +327,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
         // flat (mesh / outline) surfaces
         let hasContours = !objects.isEmpty || !lineObjects.isEmpty
-        for o in flatObjects {
+        let hasContoursScene = hasContours
+        let outlineOnly = hasContoursScene && scene.twoDimensionalAxis == nil
+        for o in flatObjects where !outlineOnly {
             guard let tri = o.triangles else { continue }
             bind(o)
             let base: SIMD4<Float> = dark ? SIMD4(0.55, 0.60, 0.68, 1) : SIMD4(0.80, 0.84, 0.90, 1)
@@ -345,6 +352,18 @@ final class Renderer: NSObject, MTKViewDelegate {
             enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 3)
             enc.setFragmentBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 3)
             enc.drawIndexedPrimitives(type: .line, indexCount: o.edgeCount, indexType: .uint32, indexBuffer: e, indexBufferOffset: 0)
+        }
+        // geometry outline (feature edges) around 3D results
+        if outlineOnly {
+            let c: SIMD4<Float> = dark ? SIMD4(0.85, 0.87, 0.9, 0.8) : SIMD4(0.2, 0.22, 0.26, 0.8)
+            for o in flatObjects {
+                guard let fe = o.features else { continue }
+                bind(o)
+                var u = uniforms(flat: c, mode: 0, lit: false)
+                enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 3)
+                enc.setFragmentBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 3)
+                enc.drawIndexedPrimitives(type: .line, indexCount: o.featureCount, indexType: .uint32, indexBuffer: fe, indexBufferOffset: 0)
+            }
         }
         // vectors / pathlines
         for o in lineObjects {

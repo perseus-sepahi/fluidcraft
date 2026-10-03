@@ -34,9 +34,11 @@ public final class SurfaceBuilder: @unchecked Sendable {
         var s = SurfaceMesh(name: name)
         var map: [Int32: UInt32] = [:]
         map.reserveCapacity(faces.count * 2)
+        var edgeNormals: [UInt64: (SIMD3<Float>, Int, Bool)] = [:]   // first normal, count, crease
         for f in faces {
             let r = mesh.faceNodeRange(f)
             let n = normalized(mesh.faceAreas[f])
+            let nf = f3(n)
             var ids: [UInt32] = []
             for j in r {
                 let node = mesh.faceNodes[j]
@@ -50,7 +52,19 @@ public final class SurfaceBuilder: @unchecked Sendable {
                 ids.append(id)
             }
             for k in 1..<(ids.count - 1) { s.triangles += [ids[0], ids[k], ids[k + 1]] }
-            for k in 0..<ids.count { s.edges += [ids[k], ids[(k + 1) % ids.count]] }
+            for k in 0..<ids.count {
+                let a = ids[k], b = ids[(k + 1) % ids.count]
+                s.edges += [a, b]
+                let key = UInt64(min(a, b)) << 32 | UInt64(max(a, b))
+                if let e = edgeNormals[key] {
+                    edgeNormals[key] = (e.0, e.1 + 1, e.2 || simd_dot(e.0, nf) < 0.866)
+                } else {
+                    edgeNormals[key] = (nf, 1, false)
+                }
+            }
+        }
+        for (key, e) in edgeNormals where e.1 == 1 || e.2 {
+            s.featureEdges += [UInt32(key >> 32), UInt32(key & 0xFFFF_FFFF)]
         }
         for i in 0..<s.normals.count { s.normals[i] = simd_normalize(s.normals[i] + SIMD3<Float>(0, 0, 1e-12)) }
         return s
