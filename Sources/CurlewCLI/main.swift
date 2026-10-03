@@ -112,6 +112,54 @@ case "validate":
         for (yp, up) in prof where yp > 0.5 && yp < 3000 {
             print(String(format: "  y+ %9.2f  u+ %7.3f   law %7.3f", yp, up, yp < 11 ? yp : log(yp) / 0.41 + 5.0))
         }
+    case "cylinder":
+        let dt = Double(option("--dt", "0.05"))!
+        let endT = Double(option("--time", "200"))!
+        let (mesh, setup) = try Benchmarks.cylinderCase(dt: dt, endTime: endT)
+        print("Mesh: \(mesh.summary)")
+        let solver = try PressureBasedSolver(mesh: mesh, setup: setup)
+        solver.log = { _ in }
+        try solver.initialize()
+        let t0 = Date()
+        var lastPrint = 0
+        let r = solver.run { s, _ in
+            if s.state.timeStep % 200 == 0 && s.state.timeStep != lastPrint {
+                lastPrint = s.state.timeStep
+                let cl = s.reportHistory.series("cl").last?.1 ?? 0, cd = s.reportHistory.series("cd").last?.1 ?? 0
+                print(String(format: "t = %7.2f  cd %.4f  cl %+.4f  (%.0f s)", s.state.time, cd, cl, Date().timeIntervalSince(t0)))
+            }
+        }
+        print("iterations \(r.iterations) diverged \(r.diverged) in \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
+        if let res = Benchmarks.analyseShedding(solver.reportHistory, settle: endT * 0.5) {
+            print(String(format: "Strouhal %.4f (ref 0.164-0.166)  Cd mean %.4f (ref 1.33-1.35)  Cl amplitude %.4f (ref 0.32-0.34) over %d periods",
+                         res.strouhal, res.cdMean, res.clAmplitude, res.periods))
+        } else { print("no periodic shedding detected") }
+    case "schafer-turek":
+        var ms = MeshingSettings(template: .channelCylinder(length: 2.2, height: 0.41, cx: 0.2, cy: 0.2, radius: 0.05))
+        ms.maxSize = Double(option("--max-size", "0.02"))!
+        ms.wallSize = Double(option("--wall-size", "0.003"))!
+        ms.growthDistance = 0.3
+        ms.blFirstHeight = Double(option("--bl", "0.0008"))!; ms.blGrowth = 1.15; ms.blThickness = 0.01
+        ms.depth2D = 1
+        let t0 = Date()
+        let gm = try GmshDriver.generate(ms)
+        let mesh = gm.mesh
+        print("Gmsh mesh: \(mesh.summary) in \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
+        print("  shapes: \(mesh.cellShapeHistogram())")
+        for z in mesh.boundaryZones { print("  \(z.name) [\(z.kind.rawValue)] \(z.count)") }
+        print(MeshQuality.report(mesh).text)
+        let solver = try PressureBasedSolver(mesh: mesh, setup: Benchmarks.schaferTurekSetup(mesh: mesh))
+        solver.log = { _ in }
+        try solver.initialize()
+        let t1 = Date()
+        let r = solver.run(iterations: Int(option("--iterations", "3000"))) { s, res in
+            if s.iteration % 500 == 0 { print(s.formatResiduals(res)) }
+        }
+        print("iterations \(r.iterations) converged \(r.converged) in \(String(format: "%.1f", Date().timeIntervalSince(t1))) s")
+        let cd = Reports.evaluate(solver.setup.reports[0], solver: solver), cl = Reports.evaluate(solver.setup.reports[1], solver: solver)
+        let zc = mesh.bounds.centre.z
+        let pp = solver.sample("pressure", at: [Vec3(0.15, 0.2, zc), Vec3(0.25, 0.2, zc)])
+        print(String(format: "Cd %.4f (ref 5.57-5.59)  Cl %.5f (ref 0.0104-0.0110)  dp %.5f (ref 0.1172-0.1176)", cd, cl, pp[0] - pp[1]))
     default: fail("unknown validation case \(which)")
     }
 case "mesh-info":

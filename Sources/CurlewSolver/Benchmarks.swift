@@ -254,4 +254,92 @@ public enum Benchmarks {
         let l = log10(reTheta)
         return 1 / (17.08 * l * l + 25.11 * l + 6.012)
     }
+
+    // MARK: Unsteady cylinder wake, Re = 100 (Williamson 1996; Park, Kwon & Choi 1998)
+
+    public static func cylinderCase(re: Double = 100, radialCells: Int = 96, circumferentialCells: Int = 128,
+                                    dt: Double = 0.05, endTime: Double = 200) throws -> (Mesh, CaseSetup) {
+        let mesh = try CylinderOGridSpec(radius: 0.5, outerRadius: 25, radialCells: radialCells,
+                                         circumferentialCells: circumferentialCells, radialGrading: 60, depth: 1).build()
+        var s = CaseSetup()
+        s.title = "Cylinder Re=\(Int(re))"
+        s.general.time = .transient
+        s.models.viscous = .laminar
+        var fluid = Material(name: "cylinder-fluid")
+        fluid.density = 1; fluid.viscosity = 1 / re
+        s.materials.append(fluid)
+        s.adopt(mesh: mesh)
+        for k in s.cellZones.keys { s.cellZones[k]!.material = "cylinder-fluid" }
+        var inlet = BoundarySettings(type: .velocityInlet)
+        inlet.velocitySpecification = .components
+        inlet.velocity = [1, 0, 0]
+        s.boundaries["inlet"] = inlet
+        s.methods.coupling = .simplec
+        s.methods.transient = .secondOrderImplicit
+        s.controls.urf.pressure = 1
+        s.controls.urf.momentum = 0.9
+        s.run.timeStepSize = dt
+        s.run.numberOfTimeSteps = Int((endTime / dt).rounded())
+        s.run.maxIterationsPerTimeStep = 8
+        s.residuals.continuity = 1e-4
+        s.residuals.velocity = 1e-5
+        s.reference.velocity = 1; s.reference.density = 1; s.reference.area = 1; s.reference.length = 1
+        var cd = ReportDefinition(name: "cd", kind: .dragCoefficient); cd.zones = ["cylinder"]; cd.direction = [1, 0, 0]
+        var cl = ReportDefinition(name: "cl", kind: .liftCoefficient); cl.zones = ["cylinder"]; cl.direction = [0, 1, 0]
+        s.reports = [cd, cl]
+        // asymmetric kick to start shedding promptly
+        var kick = PatchSettings()
+        kick.region = .box; kick.parameters = [0.5, 0, -1, 4, 1.5, 2]; kick.field = "y-velocity"; kick.value = 0.2
+        s.initialization.patches = [kick]
+        return (mesh, s)
+    }
+
+    public struct SheddingResult: Sendable { public var strouhal: Double; public var cdMean: Double; public var clAmplitude: Double; public var periods: Int }
+
+    /// Strouhal number from lift zero up-crossings after `settle`, mean drag and lift amplitude over whole periods.
+    public static func analyseShedding(_ h: ReportHistory, settle: Double, diameter: Double = 1, velocity: Double = 1) -> SheddingResult? {
+        let cl = h.series("cl").filter { $0.0 >= settle }
+        let cd = h.series("cd").filter { $0.0 >= settle }
+        guard cl.count > 10 else { return nil }
+        var crossings: [Double] = []
+        for i in 1..<cl.count where cl[i - 1].1 < 0 && cl[i].1 >= 0 {
+            let (t0, a) = cl[i - 1], (t1, b) = cl[i]
+            crossings.append(t0 + (t1 - t0) * (-a) / (b - a))
+        }
+        guard crossings.count >= 3 else { return nil }
+        let periods = crossings.count - 1
+        let T = (crossings.last! - crossings.first!) / Double(periods)
+        let window = cd.filter { $0.0 >= crossings.first! && $0.0 <= crossings.last! }
+        let cdMean = window.map(\.1).reduce(0, +) / Double(max(window.count, 1))
+        let clw = cl.filter { $0.0 >= crossings.first! && $0.0 <= crossings.last! }.map(\.1)
+        let amp = ((clw.max() ?? 0) - (clw.min() ?? 0)) / 2
+        return SheddingResult(strouhal: diameter / (velocity * T), cdMean: cdMean, clAmplitude: amp, periods: periods)
+    }
+
+    // MARK: Schäfer & Turek (1996) 2D-1: steady cylinder in a channel, Re = 20
+
+    public static func schaferTurekSetup(mesh: Mesh) -> CaseSetup {
+        var s = CaseSetup()
+        s.title = "Schäfer-Turek 2D-1 (Re=20)"
+        s.models.viscous = .laminar
+        var fluid = Material(name: "st-fluid")
+        fluid.density = 1; fluid.viscosity = 1e-3
+        s.materials.append(fluid)
+        s.adopt(mesh: mesh)
+        for k in s.cellZones.keys { s.cellZones[k]!.material = "st-fluid" }
+        s.expressions = [NamedExpression(name: "Umax", definition: "0.3 [m/s]"), NamedExpression(name: "H", definition: "0.41 [m]")]
+        var inlet = BoundarySettings(type: .velocityInlet)
+        inlet.velocitySpecification = .components
+        inlet.velocity = [.expression("4*Umax*y*(H-y)/H^2"), 0, 0]
+        s.boundaries["inlet"] = inlet
+        s.methods.coupling = .simplec
+        s.controls.urf.pressure = 1; s.controls.urf.momentum = 0.8
+        s.residuals.continuity = 1e-7; s.residuals.velocity = 1e-9
+        s.reference.velocity = 0.2; s.reference.density = 1; s.reference.area = 0.1; s.reference.length = 0.1
+        var cd = ReportDefinition(name: "cd", kind: .dragCoefficient); cd.zones = ["cylinder"]; cd.direction = [1, 0, 0]
+        var cl = ReportDefinition(name: "cl", kind: .liftCoefficient); cl.zones = ["cylinder"]; cl.direction = [0, 1, 0]
+        s.reports = [cd, cl]
+        s.run.iterations = 3000
+        return s
+    }
 }
