@@ -111,15 +111,18 @@ public enum TutorialCatalog {
         s.models.energy = true
         s.adopt(mesh: mesh)
         s.cellZones["chip"]?.material = "aluminum"
-        s.cellZones["chip"]?.energySource = .constant(5e6)   // W/m3 => 10 W per 1 cm depth... per slab
-        var inlet = BoundarySettings(type: .velocityInlet); inlet.velocityMagnitude = 1; inlet.temperature = 300
+        s.cellZones["chip"]?.energySource = .constant(1e5)   // W/m3: 0.2 W in the 0.02 x 0.01 x 0.01 m chip
+        var inlet = BoundarySettings(type: .velocityInlet); inlet.velocityMagnitude = 0.2; inlet.temperature = 300
         s.boundaries["inlet"] = inlet
         var out = BoundarySettings(type: .pressureOutlet); out.temperature = 300
         s.boundaries["outlet"] = out
         s.methods.coupling = .simplec; s.controls.urf.pressure = 1
         s.initialization.method = .hybrid
-        s.residuals.energy = 1e-8
-        s.run.iterations = 2000
+        s.residuals.energy = 1e-7
+        s.run.iterations = 3000
+        var tChip = ReportDefinition(name: "max-chip-temperature", kind: .volumeMaximum); tChip.field = "temperature"; tChip.zones = ["chip"]
+        var q = ReportDefinition(name: "outlet-heat-rate", kind: .heatTransferRate); q.zones = ["outlet", "inlet"]
+        s.reports = [tChip, q]
         return (mesh, s)
     }
 

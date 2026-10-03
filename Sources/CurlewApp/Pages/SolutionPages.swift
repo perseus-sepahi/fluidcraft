@@ -29,6 +29,10 @@ struct MethodsPage: View {
                 if ws.setup.models.viscous.isTurbulent { schemePicker(ws.setup.models.viscous == .spalartAllmaras ? "Modified Turbulent Viscosity" : "Turbulence", $ws.setup.methods.turbulence) }
                 if ws.setup.models.energy { schemePicker("Energy", $ws.setup.methods.energy) }
                 if !ws.setup.models.passiveScalars.isEmpty { schemePicker("User Scalars", $ws.setup.methods.scalars) }
+                Toggle("Bounded (TVD) higher-order momentum & energy", isOn: $ws.setup.methods.limitMomentum)
+                if ws.setup.models.viscous.isTurbulent {
+                    Toggle("Transpose turbulent stress term", isOn: $ws.setup.methods.transposeStress)
+                }
             }
             if ws.setup.general.time == .transient {
                 Section("Transient Formulation") {

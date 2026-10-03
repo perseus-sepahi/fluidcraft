@@ -255,6 +255,10 @@ public struct SolutionMethods: Codable, Sendable, Equatable {
     /// Limit higher-order face values (momentum, energy) to the range of the two adjacent cells:
     /// keeps temperatures bounded and improves convergence on coarse meshes.
     public var limitMomentum = true
+    /// Include the transpose part of the viscous stress, div(mu_eff (grad u)^T), for turbulent
+    /// viscosity. It changes typical RANS results by well under 1 % but slows convergence of
+    /// separated flows; it is always included for variable molecular viscosity.
+    public var transposeStress = false
     /// PISO neighbour corrections.
     public var pisoCorrectors = 1
     // Density-based

@@ -64,6 +64,8 @@ public final class PressureBasedSolver: @unchecked Sendable {
     var massFluxPrev: [Double] = []
     /// Wall shear viscosity per wall face (laminar or wall-function value).
     public internal(set) var muWall: [Double]
+    /// Explicit transpose-stress source from the previous iteration (under-relaxed).
+    var transposeSource: [Vec3] = []
     public internal(set) var yPlusWall: [Double]
 
     public internal(set) var residuals = ResidualHistory()
@@ -335,7 +337,9 @@ public final class PressureBasedSolver: @unchecked Sendable {
         let muEff = effectiveViscosity()
         let scheme = setup.methods.momentum
         let limitMom = setup.methods.limitMomentum
-        let turbulent = setup.models.viscous.isTurbulent || zoneMaterial.contains { $0.viscosityMethod != .constant }
+        // Transpose viscous stress: always for variable molecular viscosity, optional for turbulence.
+        let turbulent = zoneMaterial.contains { $0.viscosityMethod != .constant } ||
+            (setup.models.viscous.isTurbulent && setup.methods.transposeStress)
         let nonOrth = g.hasNonOrthogonality
         let grav = gravity
         let rhoOp = grav != .zero ? operatingDensity() : 0
@@ -344,6 +348,7 @@ public final class PressureBasedSolver: @unchecked Sendable {
         let flux = state.massFlux
         let u = state.u
         let gU = gradU
+        var tsrc = [Vec3](repeating: .zero, count: turbulent ? nC : 0)
 
         A.values.withUnsafeMutableBufferPointer { V in
             // Interior faces
@@ -386,14 +391,19 @@ public final class PressureBasedSolver: @unchecked Sendable {
                     }
                 }
                 if turbulent {
-                    // div(mu (grad u)^T): sum_j (du_j/dx_i)_f S_j
+                    // div(mu ((grad u)^T - (div u) I)): the deviatoric transpose. Identical to
+                    // div(mu (grad u)^T) for divergence-free fields, but it does not feed the
+                    // grad-div of the (not yet converged) continuity error back into momentum.
                     let S = m.faceAreas[f]
                     var t = Vec3.zero
+                    var divu = 0.0
                     for j in 0..<3 {
                         let gj = w * gU[j][P] + (1 - w) * gU[j][N]
                         t += gj * S[j]
+                        divu += gj[j]
                     }
-                    expl += mu * t
+                    let ts = mu * (t - divu * S)
+                    tsrc[P] += ts; tsrc[N] -= ts
                 }
                 bx[P] += expl.x; by[P] += expl.y; bz[P] += expl.z
                 bx[N] -= expl.x; by[N] -= expl.y; bz[N] -= expl.z
@@ -440,6 +450,30 @@ public final class PressureBasedSolver: @unchecked Sendable {
                         V[Int(diag[P])] += -F
                         bx[P] += -F * ub.x; by[P] += -F * ub.y; bz[P] += -F * ub.z
                     }
+                }
+            }
+            if turbulent {
+                for f in nI..<g.nFaces {
+                    let bf = f - nI
+                    let P = Int(m.owner[f])
+                    if isSolidCell[P] || bc.kind[bf] == .empty { continue }
+                    let S = m.faceAreas[f]
+                    var t = Vec3.zero
+                    var divu = 0.0
+                    for j in 0..<3 { t += gU[j][P] * S[j]; divu += gU[j][P][j] }
+                    let wi = Int(wallIndexOfBoundary[bf])
+                    let mu = wi >= 0 ? muWall[wi] : muEff[P]
+                    tsrc[P] += mu * (t - divu * S)
+                }
+            }
+            if turbulent {
+                // under-relax the explicit transpose source between iterations
+                let a = 0.5
+                if transposeSource.count != nC { transposeSource = tsrc }
+                for c in 0..<nC {
+                    let v = a * tsrc[c] + (1 - a) * transposeSource[c]
+                    transposeSource[c] = v
+                    bx[c] += v.x; by[c] += v.y; bz[c] += v.z
                 }
             }
             // Cell sources: pressure gradient, buoyancy, porous media, MRF, transient

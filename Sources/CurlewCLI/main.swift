@@ -176,6 +176,10 @@ case "tutorial":
     if let m = ViscousModel(rawValue: option("--model", "")) { setup.models.viscous = m }
     if let sch = ConvectionScheme(rawValue: option("--mom-scheme", "")) { setup.methods.momentum = sch }
     if let tf = TransientFormulation(rawValue: option("--time-scheme", "")) { setup.methods.transient = tf }
+    if args.contains("--no-limit") { setup.methods.limitMomentum = false }
+    if let pi = PressureInterpolation(rawValue: option("--pressure", "")) { setup.methods.pressure = pi }
+    if let nu = Double(option("--mu", "")) { for i in setup.materials.indices where setup.materials[i].kind == .fluid { setup.materials[i].viscosity = nu } }
+    if let g = GradientScheme(rawValue: option("--gradient", "")) { setup.methods.gradient = g }
     if let sch = ConvectionScheme(rawValue: option("--energy-scheme", "")) { setup.methods.energy = sch }
     if let dir = args.firstIndex(of: "--export-foam").map({ args[$0 + 1] }) {
         var o = FoamCaseExporter.Options(); o.iterations = setup.run.iterations
@@ -211,6 +215,18 @@ case "tutorial":
     }
     print("iterations \(r.iterations) converged \(r.converged) diverged \(r.diverged) in \(String(format: "%.1f", Date().timeIntervalSince(t1))) s")
     for rep in solver.setup.reports { print(String(format: "  %@ = %.6g", rep.name, Reports.evaluate(rep, solver: solver))) }
+    if args.contains("--reattachment"), let z = mesh.zone(named: "y-min") {
+        // reattachment: first downstream wall face (x > 0, y = 0) where wall shear x changes sign to positive
+        var faces = Array(z.faceRange).filter { mesh.faceCentres[$0].y < 1e-9 && mesh.faceCentres[$0].x > 0 }
+        faces.sort { mesh.faceCentres[$0].x < mesh.faceCentres[$1].x }
+        let nI = mesh.nInternalFaces
+        var xr = Double.nan
+        for i in 1..<faces.count {
+            let a = solver.state.bWallShear[faces[i - 1] - nI].x, b = solver.state.bWallShear[faces[i] - nI].x
+            if a < 0 && b >= 0 { let xa = mesh.faceCentres[faces[i - 1]].x, xb = mesh.faceCentres[faces[i]].x; xr = xa + (xb - xa) * (-a) / (b - a) }
+        }
+        print(String(format: "  reattachment x_r/h = %.3f", xr))
+    }
     if args.contains("--debug") && setup.models.energy {
         let st = solver.state
         let i = st.T.indices.max { st.T[$0] < st.T[$1] }!
