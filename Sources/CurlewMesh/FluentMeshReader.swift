@@ -73,8 +73,9 @@ public enum FluentMeshReader {
                 try s.skipBalanced(fromInside: true)
             case 13, 2013, 3013:
                 let h = try s.readHeaderHex()
+                // declaration "(13 (0 first last 0))" carries only four values
+                if h.first == 0 || !s.peekOpenParen() { try s.skipBalanced(fromInside: true); continue }
                 guard h.count >= 5 else { throw MeshError.parse("bad face header") }
-                if h[0] == 0 || !s.peekOpenParen() { try s.skipBalanced(fromInside: true); continue }
                 let first = h[1], last = h[2], bc = h[3], ftype = h[4]
                 let n = last - first + 1
                 var sec = FaceSection(zone: h[0], first: first, last: last, bc: bc, faces: [], c0: [], c1: [])
@@ -151,12 +152,16 @@ public enum FluentMeshReader {
         // Cell zones
         b.cellZones = []
         var cz = [Int32](repeating: 0, count: nCells)
-        let sortedCells = cells.sorted { $0.zone < $1.zone }
-        for sec in sortedCells {
-            let info = zoneInfo[sec.zone]
-            let kind: CellZoneKind = (info?.type.lowercased() == "solid") ? .solid : .fluid
-            b.cellZones.append(MeshBuilder.CellZoneSpec(name: info?.name ?? "zone-\(sec.zone)", kind: kind))
-            let zi = Int32(b.cellZones.count - 1)
+        // several sections may belong to the same zone id (non-contiguous cell ranges)
+        var specOfZone: [Int: Int32] = [:]
+        for sec in cells.sorted(by: { $0.zone < $1.zone }) {
+            if specOfZone[sec.zone] == nil {
+                let info = zoneInfo[sec.zone]
+                let kind: CellZoneKind = (info?.type.lowercased() == "solid") ? .solid : .fluid
+                b.cellZones.append(MeshBuilder.CellZoneSpec(name: info?.name ?? "zone-\(sec.zone)", kind: kind))
+                specOfZone[sec.zone] = Int32(b.cellZones.count - 1)
+            }
+            let zi = specOfZone[sec.zone]!
             for c in (sec.first - 1)..<min(sec.last, nCells) { cz[c] = zi }
         }
         if b.cellZones.isEmpty { b.cellZones = [MeshBuilder.CellZoneSpec(name: "fluid", kind: .fluid)] }

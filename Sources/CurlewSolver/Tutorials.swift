@@ -151,6 +151,7 @@ public enum TutorialCatalog {
         var inlet = BoundarySettings(type: .velocityInlet); inlet.velocityMagnitude = 0.5
         s.boundaries["inlet"] = inlet
         s.methods.coupling = .simplec; s.controls.urf.pressure = 1
+        s.methods.pressure = .standard   // momentum-weighted interpolation: clean porous interfaces
         s.run.iterations = 1000
         return (mesh, s)
     }

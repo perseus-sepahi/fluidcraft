@@ -332,8 +332,59 @@ public final class PressureBasedSolver: @unchecked Sendable {
 
     func computeGradients() {
         let scheme = setup.methods.gradient
-        Gradient.compute(geo, state.p, boundary: state.bP, scheme: scheme, into: &gradP)
+        if setup.methods.pressure == .standard && aP.count == mesh.nCells {
+            momentumWeightedPressureGradient()
+        } else {
+            Gradient.compute(geo, state.p, boundary: state.bP, scheme: scheme, into: &gradP)
+        }
         Gradient.compute(geo, state.u, boundary: state.bU, scheme: scheme, into: &gradU, scratch: &scratch, scratchB: &scratchB)
+    }
+
+    /// Face value of the pressure-correction coefficient D = V/a_P. Linear interpolation, except
+    /// where D jumps by more than 4x (porous interfaces, strong implicit sources): there the
+    /// distance-weighted harmonic mean lets the stiff side govern, as series resistances do.
+    @inline(__always) func faceD(_ dP: Double, _ dN: Double, _ w: Double) -> Double {
+        let lin = w * dP + (1 - w) * dN
+        let lo = min(dP, dN), hi = max(dP, dN)
+        guard lo > 0, hi > 4 * lo else { return lin }
+        return 1 / (w / dP + (1 - w) / dN)
+    }
+
+    /// Fluent's "Standard" pressure interpolation: Green-Gauss gradient with face pressures
+    /// weighted by the momentum coefficients, p_f = (p_P/a_P + p_N/a_N) / (1/a_P + 1/a_N).
+    /// It puts pressure kinks (porous media, strong body forces) exactly at the faces where
+    /// the resistance changes, which removes spurious velocity spikes there.
+    func momentumWeightedPressureGradient() {
+        let m = mesh, g = geo
+        let nI = g.nInternal
+        let p = state.p, bP = state.bP, a = aP
+        let solid = isSolidCell
+        if gradP.count != m.nCells { gradP = [Vec3](repeating: .zero, count: m.nCells) }
+        gradP.withUnsafeMutableBufferPointer { gp in
+            let G = SharedPtr(gp.baseAddress!)
+            Parallel.forEach(m.nCells) { range in
+                for c in range {
+                    var s = Vec3.zero
+                    for k in m.cellFaceRange(c) {
+                        let f = Int(m.cellFaces[k])
+                        let own = Int(m.owner[f]) == c
+                        let pf: Double
+                        if f < nI {
+                            let P = Int(m.owner[f]), N = Int(m.neighbour[f])
+                            if solid[P] || solid[N] { pf = p[c] }
+                            else {
+                                let wP = 1 / max(a[P], 1e-300), wN = 1 / max(a[N], 1e-300)
+                                pf = (p[P] * wP + p[N] * wN) / (wP + wN)
+                            }
+                        } else {
+                            pf = g.isEmptyFace[f] ? p[c] : bP[f - nI]
+                        }
+                        s += own ? pf * m.faceAreas[f] : -(pf * m.faceAreas[f])
+                    }
+                    G[c] = s / m.cellVolumes[c]
+                }
+            }
+        }
     }
 
     // MARK: Momentum
@@ -633,7 +684,7 @@ public final class PressureBasedSolver: @unchecked Sendable {
                         let S = m.faceAreas[f]
                         let rhof = w * rho[P] + (1 - w) * rho[N]
                         let ubar = w * u[P] + (1 - w) * u[N]
-                        let Df = w * D[P] + (1 - w) * D[N]
+                        let Df = faceD(D[P], D[N], w)
                         let gpbar = w * gP[P] + (1 - w) * gP[N]
                         var mf = rhof * (dot(ubar, S) - Df * g.orthCoeff[f] * ((p[N] - p[P]) - dot(gpbar, g.delta[f])))
                         if haveOld && urf < 1 {
@@ -713,7 +764,7 @@ public final class PressureBasedSolver: @unchecked Sendable {
                         let N = Int(m.neighbour[f])
                         if iface[f] || solid[P] || solid[N] { continue }
                         let w = g.weight[f]
-                        FC[f] = (w * rho[P] + (1 - w) * rho[N]) * (w * D[P] + (1 - w) * D[N]) * g.orthCoeff[f]
+                        FC[f] = (w * rho[P] + (1 - w) * rho[N]) * faceD(D[P], D[N], w) * g.orthCoeff[f]
                     } else {
                         if solid[P] { continue }
                         let k = kinds[f - nI]
