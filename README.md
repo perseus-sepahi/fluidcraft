@@ -125,6 +125,37 @@ Sources/CurlewCLI      batch interface, validation and benchmarks
 Tests/CurlewTests      unit, analytic and round-trip tests
 ```
 
-## Not included
+## Compared with Ansys Fluent
 
-Multiphase (VOF/Eulerian), species transport with reactions, discrete phase, radiation, dynamic/sliding meshes, periodic boundaries, LES/DES, adaption, a coupled pressure-based solver, implicit density-based solver and turbulence for the density-based solver.
+Curlew covers the core of a general-purpose CFD code; Fluent is a much larger product built
+over decades. The main gaps, grouped by area:
+
+**Physics models not in Curlew**
+- Multiphase: VOF, mixture, Eulerian (incl. boiling, wet steam), population balance, cavitation, Eulerian wall film.
+- Discrete phase (particle tracking, DPM/DEM coupling, sprays, erosion).
+- Species transport with mixture properties, combustion (finite-rate/EDC, non-premixed and premixed flamelets, partially premixed), pollutants (NOx, soot).
+- Radiation (DO, S2S, P-1, Rosseland, solar load).
+- Turbulence: LES, DES/SBES/SAS, transition models (γ-Reθ, intermittency, k-kl-ω), Reynolds-stress models, GEKO/BSL/standard k-ω, enhanced wall treatment, wall roughness, curvature/rotation corrections. Turbulence with the density-based solver.
+- Real-gas models, temperature-dependent (polynomial/piecewise) material properties, Carreau/Cross/Herschel–Bulkley fluids, multicomponent diffusion.
+- Solidification/melting, battery (MSMD, NTGK), fuel cells and electrochemistry, aeroacoustics (FW-H, broadband sources), fluid–structure interaction coupling, shell conduction.
+
+**Mesh and motion**
+- Fluent Meshing (watertight and fault-tolerant workflows, surface wrapping, poly-hexcore/mosaic meshes, 3D prism inflation layers); Curlew relies on its block mesher and Gmsh (3D boundary layers are not generated).
+- Polyhedral conversion, mesh adaption (hanging-node refinement), dynamic mesh (smoothing, layering, remeshing, 6-DOF), sliding mesh, overset, non-conformal mesh interfaces, translational/rotational periodicity.
+- Fan, radiator, porous-jump and baffle face conditions; non-reflecting boundaries; boundary profiles from files.
+
+**Solver numerics**
+- Coupled pressure-based solver, pseudo-transient, non-iterative time advancement, adaptive time stepping, PRESTO! pressure, implicit density-based solver, FMG initialization.
+
+**Scale and performance**
+- Distributed-memory (MPI) parallel runs across nodes and clusters; Curlew runs on one Mac's cores.
+- Fluent's native multi-GPU solver runs the whole solver on GPUs; Curlew offloads only the pressure linear solve (≈1.5× on that step, ≈14 % per iteration).
+- Curlew has been exercised up to about one million cells.
+
+**Customisation, automation and post-processing**
+- UDFs (C), Scheme/TUI journals and PyFluent; Curlew has a small console command set, JSON cases and a CLI.
+- Parametric studies and design points, adjoint solver and shape optimisation, reduced-order models, Workbench/Mechanical coupling.
+- Animations and scenes, custom field functions, histograms/FFT, particle tracks, CGNS/EnSight export, unit systems (Curlew is SI only), automatic export during runs.
+
+**Pedigree**
+- Fluent has industrial validation across many sectors and robustness on difficult meshes; Curlew is validated on the benchmarks listed above.

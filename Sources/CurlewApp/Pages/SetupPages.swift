@@ -82,21 +82,25 @@ struct ModelsPage: View {
                 Toggle("Energy equation", isOn: $ws.setup.models.energy)
             }
             Section("User-Defined Scalars (passive)") {
-                ForEach($ws.setup.models.passiveScalars) { $sc in
+                // Rows are keyed by index and read values (never live bindings) when deleting:
+                // removing an element while a binding into the same array is being read aborts.
+                ForEach(Array(ws.setup.models.passiveScalars.enumerated()), id: \.offset) { i, sc in
+                    let name = sc.name
                     HStack {
-                        TextField("Name", text: $sc.name).textFieldStyle(.roundedBorder)
-                        NumberField(label: "D", value: $sc.diffusivity, unit: "m²/s")
-                        Button(role: .destructive) { ws.setup.models.passiveScalars.removeAll { $0.name == sc.name } } label: { Image(systemName: "minus.circle") }
+                        RenameField(label: "Name", name: name) { ws.renameScalar(name, to: $0) }
+                        NumberField(label: "D", value: .element($ws.setup.models.passiveScalars, i, fallback: sc).diffusivity, unit: "m²/s")
+                        Button(role: .destructive) { ws.removeScalar(named: name) } label: { Image(systemName: "minus.circle") }
                             .buttonStyle(.borderless)
+                            .help("Remove \(name)")
                     }
                 }
-                Button("Add Scalar") {
-                    let n = "scalar-\(ws.setup.models.passiveScalars.count + 1)"
-                    ws.setup.models.passiveScalars.append(PassiveScalar(name: n))
+                Button("Add Scalar") { ws.addScalar() }
+                if !ws.setup.models.passiveScalars.isEmpty {
+                    Text("Set inlet values under Boundary Conditions › UDS. Press Return to apply a new name.").font(.caption).foregroundStyle(.secondary)
                 }
             }
             Section("Not yet available") {
-                Text("Multiphase, species with reactions, discrete phase and radiation are not part of this version.")
+                Text("Multiphase, species transport and combustion, discrete phase, radiation, LES/DES, transition and Reynolds-stress models, moving meshes, periodic and non-conformal interfaces are not part of this version. See README › Compared with Ansys Fluent.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -133,15 +137,25 @@ struct MaterialsPage: View {
                     }
                 }
                 Button("New") {
-                    var m = CurlewSolver.Material(name: "material-\(ws.setup.materials.count + 1)")
+                    var m = CurlewSolver.Material(name: Workspace.uniqueName("material", existing: ws.setup.materials.map(\.name)))
                     m.kind = .fluid
                     ws.setup.materials.append(m); selected = m.name
                 }
+                Button("Delete") {
+                    if let n = selected, ws.removeMaterial(named: n) { selected = ws.setup.materials.first?.name }
+                }
+                .disabled(selected == nil)
             }
             .padding(8)
             Divider()
             if let i = ws.setup.materials.firstIndex(where: { $0.name == selected }) {
-                MaterialEditor(material: $ws.setup.materials[i])
+                let current = ws.setup.materials[i]
+                MaterialEditor(material: .element($ws.setup.materials, i, fallback: current)) { new in
+                    guard ws.renameMaterial(current.name, to: new) else { return false }
+                    selected = new
+                    return true
+                }
+                .id(current.name)
             } else {
                 Spacer()
             }
@@ -151,10 +165,11 @@ struct MaterialsPage: View {
 
 struct MaterialEditor: View {
     @Binding var material: CurlewSolver.Material
+    var onRename: (String) -> Bool
     var body: some View {
         Form {
             Section("Material") {
-                TextField("Name", text: $material.name)
+                LabeledContent("Name") { RenameField(label: "", name: material.name, onCommit: onRename).frame(maxWidth: 200) }
                 Picker("Type", selection: $material.kind) {
                     Text("Fluid").tag(CellZoneKind.fluid); Text("Solid").tag(CellZoneKind.solid)
                 }
@@ -440,14 +455,19 @@ struct ExpressionsPage: View {
     var body: some View {
         Form {
             Section {
-                ForEach($ws.setup.expressions) { $e in
+                ForEach(Array(ws.setup.expressions.enumerated()), id: \.offset) { i, e in
+                    let name = e.name
                     HStack {
-                        TextField("Name", text: $e.name).textFieldStyle(.roundedBorder).frame(width: 110)
-                        TextField("Definition", text: $e.definition).textFieldStyle(.roundedBorder).font(.system(.body, design: .monospaced))
-                        Button(role: .destructive) { ws.setup.expressions.removeAll { $0.name == e.name } } label: { Image(systemName: "minus.circle") }.buttonStyle(.borderless)
+                        RenameField(label: "Name", name: name) { ws.renameExpression(name, to: $0) }.frame(width: 110)
+                        TextField("Definition", text: Binding<NamedExpression>.element($ws.setup.expressions, i, fallback: e).definition)
+                            .textFieldStyle(.roundedBorder).font(.system(.body, design: .monospaced))
+                        Button(role: .destructive) { ws.setup.expressions.removeAll { $0.name == name } } label: { Image(systemName: "minus.circle") }.buttonStyle(.borderless)
                     }
                 }
-                Button("New Expression") { ws.setup.expressions.append(NamedExpression(name: "expr\(ws.setup.expressions.count + 1)", definition: "1 [m/s]")) }
+                Button("New Expression") {
+                    let n = Workspace.uniqueName("expr", existing: ws.setup.expressions.map(\.name)).replacingOccurrences(of: "-", with: "")
+                    ws.setup.expressions.append(NamedExpression(name: n, definition: "1 [m/s]"))
+                }
             } header: {
                 Text("Named Expressions")
             } footer: {

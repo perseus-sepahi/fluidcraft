@@ -341,3 +341,35 @@ func solve(_ mesh: Mesh, _ s: CaseSetup, iterations: Int = 3000) throws -> Press
         #expect(other.iteration == solver.iteration)
     }
 }
+
+@Suite struct ScalarEditingTests {
+    /// Removing or renaming a user scalar after solving keeps the other scalar's field and never traps.
+    @Test func removeScalarAfterSolving() throws {
+        let mesh = try BlockMeshSpec(x: BlockAxis(from: 0, to: 1, cells: 20), y: BlockAxis(from: 0, to: 0.2, cells: 5), depth: 0.1,
+                                     sideKinds: ["x-min": .velocityInlet, "x-max": .pressureOutlet]).build()
+        var s = CaseSetup()
+        s.models.viscous = .laminar
+        s.models.passiveScalars = [PassiveScalar(name: "a"), PassiveScalar(name: "b")]
+        s.adopt(mesh: mesh)
+        var inlet = BoundarySettings(type: .velocityInlet); inlet.velocityMagnitude = 0.1
+        inlet.scalars = ["a": 1, "b": 2]
+        s.boundaries["x-min"] = inlet
+        let solver = try solve(mesh, s, iterations: 100)
+        let bField = solver.state.scalars[1]
+        #expect(bField.max()! > 1.5)
+        // remove "a": "b" must keep its data
+        s.models.passiveScalars.removeAll { $0.name == "a" }
+        s.boundaries["x-min"]!.scalars["a"] = nil
+        try solver.updateSetup(s)
+        #expect(solver.state.scalars.count == 1)
+        #expect(solver.state.scalars[0] == bField)
+        _ = solver.run(iterations: 5)
+        #expect(FieldCatalog.cellValues("b", solver) != nil)
+        #expect(FieldCatalog.cellValues("a", solver) == nil)
+        // remove the last one too
+        s.models.passiveScalars = []
+        try solver.updateSetup(s)
+        #expect(solver.state.scalars.isEmpty)
+        _ = solver.run(iterations: 5)
+    }
+}

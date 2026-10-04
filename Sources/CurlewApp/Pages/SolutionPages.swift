@@ -118,7 +118,7 @@ struct ReportDefinitionsPage: View {
             HStack {
                 Picker("", selection: $newKind) { ForEach(ReportKind.allCases, id: \.self) { Text($0.displayName).tag($0) } }.labelsHidden()
                 Button("New") {
-                    var r = ReportDefinition(name: "report-def-\(ws.setup.reports.count + 1)", kind: newKind)
+                    var r = ReportDefinition(name: Workspace.uniqueName("report-def", existing: ws.setup.reports.map(\.name)), kind: newKind)
                     if [.force, .dragCoefficient, .liftCoefficient, .momentCoefficient].contains(newKind) {
                         r.zones = ws.mesh?.boundaryZones.filter { $0.kind == .wall }.map(\.name) ?? []
                         if newKind == .liftCoefficient { r.direction = [0, 1, 0] }
@@ -132,7 +132,13 @@ struct ReportDefinitionsPage: View {
             .padding(8)
             Divider()
             if let i = ws.setup.reports.firstIndex(where: { $0.name == selected }) {
-                ReportEditor(ws: ws, report: $ws.setup.reports[i])
+                let current = ws.setup.reports[i]
+                ReportEditor(ws: ws, report: .element($ws.setup.reports, i, fallback: current)) { new in
+                    guard ws.renameReport(current.name, to: new) else { return false }
+                    selected = new
+                    return true
+                }
+                .id(current.name)
             } else { Spacer() }
         }
     }
@@ -141,10 +147,11 @@ struct ReportDefinitionsPage: View {
 struct ReportEditor: View {
     @Bindable var ws: Workspace
     @Binding var report: ReportDefinition
+    var onRename: (String) -> Bool
     var body: some View {
         Form {
             Section(report.kind.displayName) {
-                TextField("Name", text: $report.name)
+                LabeledContent("Name") { RenameField(label: "", name: report.name, onCommit: onRename).frame(maxWidth: 200) }
                 switch report.kind {
                 case .areaWeightedAverage, .massWeightedAverage, .integral, .volumeAverage, .volumeMaximum, .volumeMinimum:
                     Picker("Field", selection: $report.field) { ForEach(ws.availableFields(), id: \.self) { Text($0).tag($0) } }
@@ -163,7 +170,7 @@ struct ReportEditor: View {
                     MultiSelectList(items: m.boundaryZones.filter { $0.kind != .empty }.map(\.name), selection: $report.zones, emptyMeaning: "all zones")
                 }
             }
-            if let s = ws.solver, ws.initialized {
+            if let s = ws.solver, ws.initialized, !ws.isRunning {
                 Section("Current Value") {
                     Text(String(format: "%.6g", Reports.evaluate(report, solver: s))).font(.system(.body, design: .monospaced)).textSelection(.enabled)
                 }
@@ -229,9 +236,12 @@ struct InitializationPage: View {
                 }
             }
             Section("Patch") {
-                ForEach($ws.setup.initialization.patches.indices, id: \.self) { i in
-                    PatchRow(patch: $ws.setup.initialization.patches[i], fields: ws.availableFields()) {
-                        ws.setup.initialization.patches.remove(at: i)
+                ForEach(Array(ws.setup.initialization.patches.enumerated()), id: \.offset) { i, p in
+                    PatchRow(patch: .element($ws.setup.initialization.patches, i, fallback: p), fields: ws.availableFields()) {
+                        // defer the removal until SwiftUI has finished with this row's bindings
+                        DispatchQueue.main.async {
+                            if i < ws.setup.initialization.patches.count { ws.setup.initialization.patches.remove(at: i) }
+                        }
                     }
                 }
                 Button("Add Patch Region") {

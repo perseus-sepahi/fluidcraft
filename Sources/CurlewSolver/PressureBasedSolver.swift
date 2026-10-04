@@ -169,6 +169,7 @@ public final class PressureBasedSolver: @unchecked Sendable {
         var s2 = s
         s2.adopt(mesh: mesh)
         let turbChanged = s2.models.viscous != setup.models.viscous
+        let oldScalarNames = setup.models.passiveScalars.map(\.name)
         if s2.general.solver != setup.general.solver { densityState = nil }
         setup = s2
         exprs = try Expr.compileNamed(s2.expressions.map { ($0.name, $0.definition) })
@@ -180,9 +181,21 @@ public final class PressureBasedSolver: @unchecked Sendable {
         scalarSolver.settings = s2.controls.linear.scalars
         pSolver.accelerator = s2.controls.linear.useGPU ? GPUAccelerator.shared : nil
         if turbChanged && s2.models.viscous.isTurbulent && geo.wallDistance.isEmpty { try computeWallDistance() }
-        if state.scalars.count != s2.models.passiveScalars.count {
-            state.scalars = s2.models.passiveScalars.map { _ in [Double](repeating: 0, count: mesh.nCells) }
-            state.bScalars = s2.models.passiveScalars.map { _ in [Double](repeating: 0, count: mesh.nBoundaryFaces) }
+        // Keep scalar fields by name when scalars are added, removed or reordered.
+        let oldNames = oldScalarNames
+        let newNames = s2.models.passiveScalars.map(\.name)
+        if oldNames != newNames || state.scalars.count != newNames.count {
+            var cells: [[Double]] = [], bnd: [[Double]] = []
+            for n in newNames {
+                if let j = oldNames.firstIndex(of: n), j < state.scalars.count, j < state.bScalars.count {
+                    cells.append(state.scalars[j]); bnd.append(state.bScalars[j])
+                } else {
+                    cells.append([Double](repeating: 0, count: mesh.nCells))
+                    bnd.append([Double](repeating: 0, count: mesh.nBoundaryFaces))
+                }
+            }
+            state.scalars = cells; state.bScalars = bnd
+            state.scalarsOld = []; state.scalarsOldOld = []
         }
         updateProperties()
     }

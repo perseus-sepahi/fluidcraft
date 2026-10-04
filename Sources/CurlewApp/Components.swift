@@ -171,3 +171,35 @@ struct NoMeshNotice: View {
 extension ZoneKind {
     static var userSelectable: [ZoneKind] { [.wall, .velocityInlet, .massFlowInlet, .pressureInlet, .pressureOutlet, .outflow, .symmetry, .pressureFarField] }
 }
+
+/// Name field that commits on Return / focus loss (not per keystroke), so list
+/// selections keyed by name stay valid while typing. `onCommit` returns false to reject.
+struct RenameField: View {
+    var label: String
+    var name: String
+    var onCommit: (String) -> Bool
+    @State private var text = ""
+    @FocusState private var focused: Bool
+    var body: some View {
+        TextField(label, text: $text)
+            .textFieldStyle(.roundedBorder)
+            .focused($focused)
+            .onSubmit(commit)
+            .onChange(of: focused) { _, f in if !f { commit() } }
+            .onAppear { text = name }
+            .onChange(of: name) { _, n in if !focused { text = n } }
+    }
+    func commit() {
+        let t = text.trimmingCharacters(in: .whitespaces)
+        if t == name { return }
+        if t.isEmpty || !onCommit(t) { text = name }
+    }
+}
+
+extension Binding {
+    /// Bounds-checked element binding: safe if the array shrinks before SwiftUI drops the row.
+    static func element<T>(_ array: Binding<[T]>, _ index: Int, fallback: T) -> Binding<T> {
+        Binding<T>(get: { index < array.wrappedValue.count ? array.wrappedValue[index] : fallback },
+                   set: { v in if index < array.wrappedValue.count { array.wrappedValue[index] = v } })
+    }
+}

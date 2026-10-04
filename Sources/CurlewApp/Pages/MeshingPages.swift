@@ -307,6 +307,7 @@ struct ZoneRow: View {
                 TextField("Name", text: $name).textFieldStyle(.roundedBorder).frame(maxWidth: 140)
                     .onSubmit { rename(m, z) }
                 Picker("", selection: Binding(get: { ws.setup.boundaries[z.name]?.type ?? z.kind }, set: { k in
+                    if ws.meshEditingBlocked { return }
                     var b = ws.setup.boundaries[z.name] ?? BoundarySettings(type: k)
                     b.type = k
                     ws.setup.boundaries[z.name] = b
@@ -321,6 +322,7 @@ struct ZoneRow: View {
         }
     }
     func rename(_ m: Mesh, _ z: BoundaryZone) {
+        if ws.meshEditingBlocked { name = z.name; return }
         let new = name.trimmingCharacters(in: .whitespaces)
         guard !new.isEmpty, new != z.name, !m.boundaryZones.contains(where: { $0.name == new }) else { name = z.name; return }
         let settings = ws.setup.boundaries.removeValue(forKey: z.name)

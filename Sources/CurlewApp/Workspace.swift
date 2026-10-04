@@ -182,6 +182,7 @@ final class Workspace {
     // MARK: Mesh
 
     func setMesh(_ m: Mesh, source: String) {
+        if meshEditingBlocked { return }
         mesh = m
         meshSource = source
         setup.adopt(mesh: m)
