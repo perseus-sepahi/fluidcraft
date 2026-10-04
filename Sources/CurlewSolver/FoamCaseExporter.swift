@@ -58,6 +58,17 @@ public enum FoamCaseExporter {
             return t + "}\n"
         }
         func firstFace(_ z: BoundaryZone) -> Int { z.start - m.nInternalFaces }
+        // per-face values (expression profiles) become nonuniform lists; constants stay uniform
+        func vectorValue(_ z: BoundaryZone, _ f: (Int) -> Vec3) -> String {
+            let vals = (0..<z.count).map { f(firstFace(z) + $0) }
+            if vals.allSatisfy({ norm($0 - vals[0]) <= 1e-12 * max(1, norm(vals[0])) }) { return "uniform \(v(vals[0]))" }
+            return "nonuniform List<vector> \(vals.count)\n(\n" + vals.map(v).joined(separator: "\n") + "\n)"
+        }
+        func scalarValue(_ z: BoundaryZone, _ f: (Int) -> Double) -> String {
+            let vals = (0..<z.count).map { f(firstFace(z) + $0) }
+            if vals.allSatisfy({ abs($0 - vals[0]) <= 1e-12 * max(1, abs(vals[0])) }) { return "uniform " + String(format: "%.10g", vals[0]) }
+            return "nonuniform List<scalar> \(vals.count)\n(\n" + vals.map { String(format: "%.10g", $0) }.joined(separator: "\n") + "\n)"
+        }
         let ini = s.initialization
         let u0 = Vec3(ini.velocity[0].constantValue ?? 0, ini.velocity[1].constantValue ?? 0, ini.velocity[2].constantValue ?? 0)
 
@@ -70,7 +81,7 @@ public enum FoamCaseExporter {
                 let uw = bcd.uSpec[firstFace(z)]
                 return norm(uw) > 0 ? "        type            fixedValue;\n        value           uniform \(v(uw));\n" : "        type            noSlip;\n"
             case .velocityInlet, .massFlowInlet:
-                return "        type            fixedValue;\n        value           uniform \(v(bcd.uSpec[firstFace(z)]));\n"
+                return "        type            fixedValue;\n        value           \(vectorValue(z) { bcd.uSpec[$0] });\n"
             case .pressureOutlet, .outflow:
                 return "        type            pressureInletOutletVelocity;\n        value           uniform (0 0 0);\n"
             case .pressureInlet:
@@ -101,7 +112,7 @@ public enum FoamCaseExporter {
                     case .symmetry: return "        type            symmetryPlane;\n"
                     case .wall: return "        type            \(wallType);\n        value           uniform \(wallValue);\n"
                     case .velocityInlet, .massFlowInlet, .pressureInlet:
-                        return "        type            fixedValue;\n        value           uniform \(String(format: "%.10g", value(bf)));\n"
+                        return "        type            fixedValue;\n        value           \(scalarValue(z, value));\n"
                     default:
                         return "        type            inletOutlet;\n        inletValue      uniform \(String(format: "%.10g", value(bf)));\n        value           uniform \(String(format: "%.10g", value(bf)));\n"
                     }
@@ -146,6 +157,38 @@ public enum FoamCaseExporter {
         // system
         let app = transient ? "pimpleFoam" : "simpleFoam"
         let walls = m.boundaryZones.filter { $0.kind == .wall }.map { MeshWriters.foamName($0.name) }
+        // drag/lift report definitions become forceCoeffs function objects (kinematic p, so rho = rhoInf)
+        func forceCoefficientObjects() -> String {
+            var t = ""
+            for r in s.reports where r.kind == .dragCoefficient || r.kind == .liftCoefficient {
+                let patches = (r.zones.isEmpty ? walls : r.zones.map(MeshWriters.foamName)).joined(separator: " ")
+                let dir = r.direction.count == 3 ? Vec3(r.direction[0], r.direction[1], r.direction[2]) : Vec3(1, 0, 0)
+                let drag = r.kind == .dragCoefficient ? dir : Vec3(1, 0, 0)
+                let lift = r.kind == .liftCoefficient ? dir : (abs(drag.y) < 0.9 ? Vec3(0, 1, 0) : Vec3(0, 0, 1))
+                let pitch = normalized(cross(drag, lift))
+                t += """
+                    \(MeshWriters.foamName(r.name))
+                    {
+                        type            forceCoeffs;
+                        libs            (forces);
+                        writeControl    timeStep;
+                        writeInterval   1;
+                        patches         (\(patches));
+                        rho             rhoInf;
+                        rhoInf          \(mat.density);
+                        CofR            \(v(Vec3(r.momentCentre.count == 3 ? r.momentCentre[0] : 0, r.momentCentre.count == 3 ? r.momentCentre[1] : 0, r.momentCentre.count == 3 ? r.momentCentre[2] : 0)));
+                        dragDir         \(v(drag));
+                        liftDir         \(v(lift));
+                        pitchAxis       \(v(pitch));
+                        magUInf         \(s.reference.velocity);
+                        lRef            \(s.reference.length);
+                        Aref            \(s.reference.area);
+                    }
+
+                """
+            }
+            return t
+        }
         try write("system/controlDict", header("dictionary", "controlDict", "system") + """
             application     \(app);
             startFrom       latestTime;
@@ -178,7 +221,7 @@ public enum FoamCaseExporter {
                     libs            (fieldFunctionObjects);
                     writeControl    writeTime;
                 }
-            }
+            \(forceCoefficientObjects())}
 
             """)
         let turbFields = model.usesOmega ? "k|omega" : (model.usesEpsilon ? "k|epsilon" : (model == .spalartAllmaras ? "nuTilda" : "k"))

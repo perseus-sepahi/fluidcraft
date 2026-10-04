@@ -12,7 +12,34 @@ public enum GmshReader {
         return try read(data: data, depth2D: depth2D)
     }
 
-    struct Element { var type: Int; var nodes: [Int32]; var physical: Int; var dim: Int }
+    /// One Gmsh element reduced to its corner nodes. `type` is the linear base type
+    /// (1 line, 2 tri, 3 quad, 4 tet, 5 hex, 6 prism, 7 pyramid).
+    public struct Element: Sendable {
+        public var type: Int
+        public var nodes: [Int32]
+        public var physical: Int
+        public var dim: Int
+        public init(type: Int, nodes: [Int32], physical: Int, dim: Int) {
+            self.type = type; self.nodes = nodes; self.physical = physical; self.dim = dim
+        }
+    }
+
+    /// Element-level content of a Gmsh file, before faces are assembled.
+    public struct Parsed: Sendable {
+        public var points: [Vec3]
+        public var elements: [Element]
+        /// dim -> physical tag -> name
+        public var physicalNames: [Int: [Int: String]]
+    }
+
+    public static func read(data: Data, depth2D: Double = 1) throws -> Mesh {
+        let p = try parse(data: data)
+        return try assemble(points: p.points, elements: p.elements, physicalNames: p.physicalNames, depth: depth2D)
+    }
+
+    public static func build(_ p: Parsed, depth2D: Double = 1) throws -> Mesh {
+        try assemble(points: p.points, elements: p.elements, physicalNames: p.physicalNames, depth: depth2D)
+    }
 
     /// Corner-node count and dimension per Gmsh element type (higher-order types keep corners).
     static func info(_ type: Int) -> (dim: Int, corners: Int, base: Int, total: Int)? {
@@ -40,7 +67,7 @@ public enum GmshReader {
         }
     }
 
-    static func cellFaces(base: Int, _ n: [Int32]) -> [[Int32]] {
+    public static func cellFaces(base: Int, _ n: [Int32]) -> [[Int32]] {
         switch base {
         case 4: return [[n[0], n[2], n[1]], [n[0], n[1], n[3]], [n[0], n[3], n[2]], [n[1], n[2], n[3]]]
         case 5: return [[n[0], n[3], n[2], n[1]], [n[4], n[5], n[6], n[7]], [n[0], n[1], n[5], n[4]],
@@ -52,7 +79,7 @@ public enum GmshReader {
         }
     }
 
-    public static func read(data: Data, depth2D: Double = 1) throws -> Mesh {
+    public static func parse(data: Data) throws -> Parsed {
         var p = ByteParser(data: data)
         guard p.seek("$MeshFormat") else { throw MeshError.parse("not a Gmsh file ($MeshFormat missing)") }
         let version = try p.double()
@@ -163,12 +190,12 @@ public enum GmshReader {
                 elements.append(Element(type: inf.base, nodes: nodes, physical: phys, dim: inf.dim))
             }
         }
-        return try assemble(points: points, elements: elements, physicalNames: physicalNames, depth: depth2D)
+        return Parsed(points: points, elements: elements, physicalNames: physicalNames)
     }
 
-    struct FaceKey: Hashable {
+    public struct FaceKey: Hashable {
         var a: Int32, b: Int32, c: Int32, d: Int32
-        init(_ nodes: [Int32]) {
+        public init(_ nodes: [Int32]) {
             var s = nodes.sorted()
             while s.count < 4 { s.append(-1) }
             // keep -1 padding at the end so triangles and quads cannot collide

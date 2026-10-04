@@ -263,6 +263,10 @@ public struct SolutionMethods: Codable, Sendable, Equatable {
     /// correction is capped at psi/(1-psi) times the orthogonal part. 1 = fully corrected,
     /// 0 = uncorrected; nil = automatic from the mesh's maximum non-orthogonality.
     public var nonOrthogonalLimit: Double? = nil
+    /// Pressure force from a conservative (skewness-corrected Green–Gauss) gradient when the
+    /// gradient scheme is least squares, so the pressure force on any region equals the
+    /// pressure integral over its boundary. Off reproduces the plain least-squares source.
+    public var conservativePressureGradient = true
     /// PISO neighbour corrections.
     public var pisoCorrectors = 1
     // Density-based

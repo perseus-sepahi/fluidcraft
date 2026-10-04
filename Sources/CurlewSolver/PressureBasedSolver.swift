@@ -58,6 +58,7 @@ public final class PressureBasedSolver: @unchecked Sendable {
     var Dcell: [Double]
     var pCorr: [Double]
     var gradPc: [Vec3] = []
+    var gradPScratch: [Vec3] = []
     var bx: [Double], by: [Double], bz: [Double]
     var scratch: [Double] = [], scratchB: [Double] = []
     var uPrev: [Vec3] = []
@@ -360,6 +361,10 @@ public final class PressureBasedSolver: @unchecked Sendable {
     func computeGradients() {
         let scheme = setup.methods.gradient
         Gradient.compute(geo, state.p, boundary: state.bP, scheme: scheme, into: &gradP)
+        if scheme == .leastSquares && setup.methods.conservativePressureGradient {
+            Gradient.conservative(geo, state.p, boundary: state.bP, reconstruction: gradP, into: &gradPScratch)
+            swap(&gradP, &gradPScratch)
+        }
         if setup.methods.pressure == .standard && aP.count == mesh.nCells && !resistiveCells.isEmpty {
             momentumWeightedPressureGradient(cells: resistiveCells)
         }
@@ -882,7 +887,13 @@ public final class PressureBasedSolver: @unchecked Sendable {
             }
         }}
         // Cell velocity and pressure correction
-        if correctVelocity { Gradient.compute(g, pCorr, boundary: pcb, scheme: setup.methods.gradient, into: &gradPc) }
+        if correctVelocity {
+            Gradient.compute(g, pCorr, boundary: pcb, scheme: setup.methods.gradient, into: &gradPc)
+            if setup.methods.gradient == .leastSquares && setup.methods.conservativePressureGradient {
+                Gradient.conservative(g, pCorr, boundary: pcb, reconstruction: gradPc, into: &gradPScratch)
+                swap(&gradPc, &gradPScratch)
+            }
+        }
         let gpc = gradPc
         let ax2 = m.twoDimensionalAxis
         let shift = anyDirichlet ? 0.0 : state.p[refCell] + urfP * pc[refCell]

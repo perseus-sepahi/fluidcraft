@@ -232,8 +232,9 @@ final class Workspace {
                 DispatchQueue.main.async {
                     self.isMeshing = false
                     self.statusText = "Ready"
-                    let tail = r.log.split(separator: "\n").suffix(4).joined(separator: "\n")
-                    self.log(tail)
+                    let lines = r.log.split(separator: "\n").filter { !$0.hasPrefix("Inflation:") }
+                    self.log(lines.suffix(4).joined(separator: "\n"))
+                    if let inf = r.inflation { self.log(inf.description) }
                     self.setMesh(r.mesh, source: "Gmsh")
                     if let hook = setupHook { hook(r.mesh, &self.setup) }
                 }

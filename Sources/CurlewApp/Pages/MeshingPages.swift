@@ -181,7 +181,9 @@ struct MeshGenerationPage: View {
             }
             Section("Sizing") {
                 sizingFields
-                if gmTemplate != 2 {
+                if gmTemplate == 2 {
+                    InflationFields(ws: ws, gm: $gm, referenceLength: pipeD)
+                } else {
                     Toggle("Quad-dominant", isOn: $gm.quads)
                     NumberField(label: "Boundary layer first height (0 = off)", value: $gm.blFirstHeight, unit: "m")
                     NumberField(label: "Boundary layer growth", value: $gm.blGrowth)
@@ -233,7 +235,10 @@ struct MeshGenerationPage: View {
                 Text("Named selections are created automatically: inlet/outlet on the extreme faces along the flow direction, \(cadExternal ? "farfield on the other box faces and body on the geometry" : "wall on all other faces").")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Section("Sizing") { sizingFields }
+            Section("Sizing") {
+                sizingFields
+                InflationFields(ws: ws, gm: $gm, referenceLength: 1)
+            }
             Section {
                 Button(ws.isMeshing ? "Meshing…" : "Mesh Geometry") {
                     var s = gm
@@ -330,5 +335,59 @@ struct ZoneRow: View {
         ws.setup.boundaries[new] = settings ?? BoundarySettings(type: z.kind)
         ws.solver = nil; ws.post = nil; ws.initialized = false
         ws.log("Renamed zone \(z.name) → \(new)")
+    }
+}
+
+
+/// 3D prism-layer (inflation) controls with a first-cell-height calculator.
+struct InflationFields: View {
+    var ws: Workspace
+    @Binding var gm: MeshingSettings
+    var referenceLength: Double
+    @State private var showCalculator = false
+    @State private var yPlus = 1.0
+    @State private var velocity = 1.0
+    @State private var length = 0.0
+
+    var enabled: Binding<Bool> {
+        Binding(get: { gm.blFirstHeight > 0 }, set: { on in
+            if on {
+                gm.blFirstHeight = gm.wallSize / 50
+                if gm.blLayers == 0 { gm.blLayers = 10 }
+            } else { gm.blFirstHeight = 0 }
+        })
+    }
+
+    var body: some View {
+        Toggle("Prism layers on walls (inflation)", isOn: enabled)
+        if gm.blFirstHeight > 0 {
+            NumberField(label: "First layer height", value: $gm.blFirstHeight, unit: "m")
+            NumberField(label: "Growth rate", value: $gm.blGrowth)
+            IntField(label: "Number of layers", value: $gm.blLayers)
+            if let inf = gm.inflation3D {
+                let last = inf.firstHeight * pow(inf.growth, Double(inf.layers - 1))
+                Text(String(format: "Total thickness %.4g m, last layer %.3g m. Prisms join the tetrahedra best when the wall size is about 1.5–3 × the last layer (now %.1f ×).",
+                            inf.targetThickness, last, gm.wallSize / last))
+                    .font(.caption).foregroundStyle(gm.wallSize / last > 4 || gm.wallSize / last < 1 ? .orange : .secondary)
+            }
+            DisclosureGroup("First height from y+", isExpanded: $showCalculator) {
+                NumberField(label: "Target y+", value: $yPlus)
+                NumberField(label: "Velocity", value: $velocity, unit: "m/s")
+                NumberField(label: "Reference length", value: $length, unit: "m")
+                let mat = ws.setup.materials.first
+                let rho = mat?.density ?? 1.225, mu = mat?.viscosity ?? 1.7894e-5
+                let e = WallSpacing.estimate(yPlus: yPlus, velocity: velocity, length: length > 0 ? length : referenceLength, density: rho, viscosity: mu)
+                Text(String(format: "Re = %.3g with %@ (ρ %.4g, μ %.4g). First height %.3g m; boundary layer ≈ %.3g m.",
+                            e.reynolds, (mat?.name ?? "air") as NSString, rho, mu, e.firstHeight, e.boundaryLayerThickness))
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("Use This Height") {
+                    gm.blFirstHeight = e.firstHeight
+                    // enough layers for the last one to reach about half the wall size
+                    gm.blLayers = max(3, Int((log(max(0.5 * gm.wallSize / e.firstHeight, 1.01)) / log(max(gm.blGrowth, 1.01))).rounded(.up)) + 1)
+                }
+            }
+            Text("All walls are inflated; inlets, outlets and symmetry planes are followed by the layers. Low-Re models (SST, Spalart–Allmaras) want y+ ≈ 1.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
     }
 }

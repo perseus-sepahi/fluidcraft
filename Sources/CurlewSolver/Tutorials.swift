@@ -75,6 +75,14 @@ public enum TutorialCatalog {
         Tutorial(id: "pipe", title: "Laminar Pipe Flow (3D, Re = 100)",
                  summary: "Gmsh tetrahedral pipe; developing flow and pressure drop vs Hagen-Poiseuille.",
                  needsGmsh: true, suggestedField: "velocity-magnitude") { try pipe() },
+        Tutorial(id: "turbulent-pipe", title: "Turbulent Pipe with Prism Layers (k-ω SST, Re = 20 000)",
+                 summary: "3D boundary-layer meshing: 14 prism layers sized for y⁺ ≈ 1 under a tetrahedral core. Compare the friction factor with Petukhov's correlation (0.0262).",
+                 needsGmsh: true, suggestedField: "y-plus") {
+            let pc = try Benchmarks.turbulentPipeCase()
+            var s = pc.setup
+            s.run.iterations = 600
+            return (pc.mesh, s)
+        },
     ]
 
     static func setMaterial(_ s: inout CaseSetup, _ mat: Material, zones: [String]? = nil) {

@@ -17,11 +17,14 @@ guard let cmd = args.first else {
     curlew-cli — Curlew CFD batch interface
 
       run <case.json> --mesh <file> [--iterations N] [--save out.curlew] [--vtu out.vtu] [--gpu]
+                [--bl-first h --bl-growth g --bl-layers n --bl-zones a,b]   prism layers on a 3D Gmsh mesh
       run <case.curlew> [--continue] [--iterations N] [--save out.curlew] [--vtu out.vtu]
       tutorial <id> [--iterations N] [--vtu out.vtu] [--export-foam dir]
-      validate <cavity|natural-convection|flat-plate|cylinder|schafer-turek|sod|ramp> [options]
+      validate <cavity|natural-convection|flat-plate|pipe|cylinder|schafer-turek|sod|ramp> [options]
       mesh-info <mesh file>
       mesh-cad <file.step> [--internal] [--axis 0|1|2] [--max-size h] [--wall-size h] [--solve]
+      mesh-pipe [--length L] [--diameter D] [--max-size h] [--wall-size h]
+                3D meshes take prism layers: --bl-first h --bl-growth g --bl-layers n [--foam dir]
       export <case.curlew> [--foam dir] [--fluent-mesh out.msh]
       bench-linear --n 100            CPU vs Metal GPU AMG on an n^3 Poisson problem
       bench-solver --n 64             pressure-based iterations with/without GPU
@@ -34,6 +37,48 @@ guard let cmd = args.first else {
 func option(_ name: String, _ def: String) -> String {
     if let i = args.firstIndex(of: name), i + 1 < args.count { return args[i + 1] }
     return def
+}
+
+/// `--bl-first h --bl-growth g --bl-layers n` (or `--bl-thickness T`) → prism layers on 3D meshes.
+func applyBoundaryLayerOptions(_ ms: inout MeshingSettings) {
+    ms.blFirstHeight = Double(option("--bl-first", "0")) ?? 0
+    ms.blGrowth = Double(option("--bl-growth", "1.2")) ?? 1.2
+    ms.blLayers = Int(option("--bl-layers", "0")) ?? 0
+    ms.blThickness = Double(option("--bl-thickness", "0")) ?? 0
+}
+
+/// Read a mesh file; a 3D Gmsh mesh gets prism layers when `--bl-first` is given
+/// (`--bl-growth`, `--bl-layers`, `--bl-zones a,b` = walls to inflate, default all walls).
+func readMesh(_ path: String) throws -> Mesh {
+    let url = URL(fileURLWithPath: path)
+    let h1 = Double(option("--bl-first", "0")) ?? 0
+    guard h1 > 0 else { return try MeshIO.read(url: url) }
+    let data = try Data(contentsOf: url)
+    guard data.starts(with: Data("$MeshFormat".utf8)) else { fail("--bl-first needs a 3D Gmsh .msh mesh") }
+    var parsed = try GmshReader.parse(data: data)
+    let g = Double(option("--bl-growth", "1.2")) ?? 1.2
+    var n = Int(option("--bl-layers", "0")) ?? 0
+    if n == 0 { n = InflationSettings.layers(firstHeight: h1, growth: g, thickness: Double(option("--bl-thickness", "0")) ?? 0) }
+    let zones = option("--bl-zones", "").split(separator: ",").map(String.init)
+    let report = try PrismInflation.inflate(&parsed, settings: InflationSettings(firstHeight: h1, growth: g, layers: n, zones: zones))
+    print(report)
+    return try GmshReader.build(parsed)
+}
+
+/// Print a generated mesh and optionally write it out (`--foam dir` for OpenFOAM checkMesh, `--fluent-mesh file`).
+func describeGenerated(_ r: GmshDriver.Result, seconds: Double) throws {
+    print("Gmsh mesh in \(String(format: "%.1f", seconds)) s: \(r.mesh.summary)")
+    print("  shapes \(r.mesh.cellShapeHistogram())")
+    if let inf = r.inflation { print("  \(inf)") }
+    for z in r.mesh.boundaryZones { print("  zone \(z.name) [\(z.kind.rawValue)] \(z.count) faces") }
+    print(MeshQuality.report(r.mesh).text)
+    let foam = option("--foam", "")
+    if !foam.isEmpty {
+        var s = CaseSetup(); s.adopt(mesh: r.mesh)
+        try FoamCaseExporter.export(mesh: r.mesh, setup: s, to: URL(fileURLWithPath: foam)); print("Wrote OpenFOAM case \(foam)")
+    }
+    let fl = option("--fluent-mesh", "")
+    if !fl.isEmpty { try MeshWriters.fluentMesh(r.mesh).write(toFile: fl, atomically: true, encoding: .utf8); print("Wrote \(fl)") }
 }
 
 switch cmd {
@@ -124,6 +169,53 @@ case "validate":
         for (yp, up) in prof where yp > 0.5 && yp < 3000 {
             print(String(format: "  y+ %9.2f  u+ %7.3f   law %7.3f", yp, up, yp < 11 ? yp : log(yp) / 0.41 + 5.0))
         }
+    case "pipe":
+        // Turbulent pipe: friction factor on prism layers (default) or tetrahedra only (--tet-only)
+        let re = Double(option("--re", "20000"))!
+        let model = ViscousModel(rawValue: option("--model", "k-omega-sst")) ?? .kOmegaSST
+        let pc = try Benchmarks.turbulentPipeCase(re: re, lengthDiameters: Double(option("--length", "10"))!,
+                                                  wallSize: Double(option("--wall-size", "0.06"))!, maxSize: Double(option("--max-size", "0.1"))!,
+                                                  yPlus: args.contains("--tet-only") ? nil : Double(option("--y-plus", "1"))!,
+                                                  growth: Double(option("--bl-growth", "1.25"))!, model: model)
+        var setup = pc.setup
+        var pc2 = pc
+        if let a = Double(option("--from", "")) { pc2.measureFrom = a }
+        if let b = Double(option("--to", "")) { pc2.measureTo = b }
+        if args.contains("--gpu") { setup.controls.linear.useGPU = true }
+        if let g = GradientScheme(rawValue: option("--gradient", "")) { setup.methods.gradient = g }
+        if args.contains("--plain-ls-pressure") { setup.methods.conservativePressureGradient = false }
+        print("Mesh: \(pc.mesh.summary)  \(pc.mesh.cellShapeHistogram())")
+        if let inf = pc.inflation { print("  \(inf)") }
+        print(MeshQuality.report(pc.mesh).text)
+        let exportDir = option("--export-foam", "")
+        if !exportDir.isEmpty {
+            var o = FoamCaseExporter.Options(); o.iterations = Int(option("--iterations", "2000"))!
+            try FoamCaseExporter.export(mesh: pc.mesh, setup: setup, to: URL(fileURLWithPath: exportDir), options: o)
+            print("OpenFOAM case written to \(exportDir)")
+        }
+        let solver = try PressureBasedSolver(mesh: pc.mesh, setup: setup)
+        solver.log = { _ in }
+        try solver.initialize()
+        let t0 = Date()
+        let r = solver.run(iterations: Int(option("--iterations", "2000"))) { s, res in
+            if s.iteration % Int(option("--every", "100"))! == 0 {
+                let fr = Benchmarks.measurePipeFriction(s, from: pc2.measureFrom, to: pc2.measureTo)
+                print(s.formatResiduals(res) + String(format: "   f(dp) %.5f  f(tau) %.5f", fr.fromPressure, fr.fromShear))
+            }
+        }
+        print("iterations \(r.iterations) converged \(r.converged) diverged \(r.diverged) in \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
+        let fr = Benchmarks.measurePipeFriction(solver, from: pc2.measureFrom, to: pc2.measureTo)
+        print(String(format: "Friction factor between x/D = %.1f and %.1f (bulk velocity %.4f, mean wall y+ %.2f):", pc2.measureFrom, pc2.measureTo, fr.bulkVelocity, fr.meanYPlus))
+        print(String(format: "  curlew  from dp/dx %.5f   from wall shear %.5f", fr.fromPressure, fr.fromShear))
+        for (name, f) in Benchmarks.pipeFrictionCorrelations(re: re) {
+            print(String(format: "  %-36@ %.5f   (dp/dx %+.2f%%, shear %+.2f%%)", name as NSString, f, 100 * (fr.fromPressure - f) / f, 100 * (fr.fromShear - f) / f))
+        }
+        print("Local friction factor along the pipe (x/D, from dp/dx, from wall shear):")
+        for (x, fp, ft) in Benchmarks.pipeFrictionProfile(solver, length: Double(option("--length", "10"))!) {
+            print(String(format: "  %5.1f  %.5f  %.5f", x, fp, ft))
+        }
+        let save = option("--save", "")
+        if !save.isEmpty { try CasePackage.write(to: URL(fileURLWithPath: save), mesh: pc.mesh, setup: solver.setup, solver: solver); print("Wrote \(save)") }
     case "cylinder":
         let dt = Double(option("--dt", "0.05"))!
         let endT = Double(option("--time", "200"))!
@@ -398,12 +490,10 @@ case "mesh-cad":
     ms.maxSize = Double(option("--max-size", "0.4"))!
     ms.wallSize = Double(option("--wall-size", "0.05"))!
     ms.growthDistance = Double(option("--growth", "1.5"))!
+    applyBoundaryLayerOptions(&ms)
     let t0 = Date()
     let r = try GmshDriver.generate(ms)
-    print("Gmsh CAD mesh in \(String(format: "%.1f", Date().timeIntervalSince(t0))) s: \(r.mesh.summary)")
-    print("  shapes \(r.mesh.cellShapeHistogram())")
-    for z in r.mesh.boundaryZones { print("  zone \(z.name) [\(z.kind.rawValue)] \(z.count) faces") }
-    print(MeshQuality.report(r.mesh).text)
+    try describeGenerated(r, seconds: Date().timeIntervalSince(t0))
     if args.contains("--solve") {
         var s = CaseSetup()
         s.models.viscous = .laminar
@@ -422,6 +512,13 @@ case "mesh-cad":
         var cd = ReportDefinition(name: "cd", kind: .dragCoefficient); cd.zones = ["body"]
         s.reports = [cd]
         s.residuals.continuity = 1e-5; s.residuals.velocity = 1e-6
+        if args.contains("--plain-ls-pressure") { s.methods.conservativePressureGradient = false }
+        let foamDir = option("--export-foam", "")
+        if !foamDir.isEmpty {
+            var o = FoamCaseExporter.Options(); o.iterations = Int(option("--iterations", "1500"))!
+            try FoamCaseExporter.export(mesh: r.mesh, setup: s, to: URL(fileURLWithPath: foamDir), options: o)
+            print("OpenFOAM case written to \(foamDir)")
+        }
         let solver = try PressureBasedSolver(mesh: r.mesh, setup: s)
         solver.log = { _ in }
         try solver.initialize()
@@ -441,6 +538,33 @@ case "mesh-cad":
         }
         print("iterations \(res.iterations) converged \(res.converged) in \(String(format: "%.1f", Date().timeIntervalSince(t1))) s; Cd = \(String(format: "%.4f", Reports.evaluate(s.reports[0], solver: solver))) (Re=100 sphere: ~1.09)")
     }
+case "pipe-balance":
+    // axial momentum budget of a saved pipe solution: pipe-balance <case.curlew> [--from x0 --to x1] [--gradient green-gauss-cell-based]
+    let pkg = try CasePackage.read(URL(fileURLWithPath: args[1]))
+    var setup = pkg.setup
+    if let g = GradientScheme(rawValue: option("--gradient", "")) { setup.methods.gradient = g }
+    let solver = try PressureBasedSolver(mesh: pkg.mesh, setup: setup)
+    solver.log = { _ in }
+    try CasePackage.restore(URL(fileURLWithPath: args[1]), into: solver)
+    let x0 = Double(option("--from", "5.5"))!, x1 = Double(option("--to", "8.5"))!
+    print(Benchmarks.pipeForceBalance(solver, from: x0, to: x1))
+    if args.contains("--diagnose") {
+        let d = Benchmarks.pipePressureDiagnostics(solver, at: 0.5 * (x0 + x1))
+        print("p = -x:  \(d.synthetic)")
+        print("radial pressure profile at x = \(0.5 * (x0 + x1)) (r, mean p, cells):")
+        for b in d.profile { print(String(format: "  %.3f  %+.6f  %d", b.r, b.p, b.n)) }
+        for (name, g, slope, n) in Benchmarks.pipeGradientByRegion(solver, from: x0, to: x1, rSplit: Double(option("--r-split", "0.36"))!) {
+            print(String(format: "  %@: %d cells, mean LS dp/dx %+.6f, regression slope of p %+.6f (ratio %.4f)", name as NSString, n, g, slope, g / slope))
+        }
+    }
+case "mesh-pipe":
+    var ms = MeshingSettings(template: .pipe(length: Double(option("--length", "0.5"))!, diameter: Double(option("--diameter", "0.05"))!))
+    ms.maxSize = Double(option("--max-size", "0.006"))!
+    ms.wallSize = Double(option("--wall-size", "0.003"))!
+    ms.growthDistance = Double(option("--growth", "0.02"))!
+    applyBoundaryLayerOptions(&ms)
+    let t0 = Date()
+    try describeGenerated(try GmshDriver.generate(ms), seconds: Date().timeIntervalSince(t0))
 case "run":
     // Batch run of a case: a .curlew package, or a JSON case file plus --mesh <file>.
     guard args.count > 1 else { fail("run <case.json|case.curlew> [--mesh file] [--iterations N] [--save out.curlew] [--vtu out.vtu] [--gpu] [--continue]") }
@@ -455,7 +579,7 @@ case "run":
         setup = try CaseSetup.decodeLenient(Data(contentsOf: input))
         let meshPath = option("--mesh", "")
         guard !meshPath.isEmpty else { fail("a JSON case needs --mesh <file> (Fluent .msh, Gmsh .msh, OpenFOAM case dir or .crlmesh)") }
-        mesh = try MeshIO.read(url: URL(fileURLWithPath: meshPath))
+        mesh = try readMesh(meshPath)
     }
     if let n = Int(option("--iterations", "")) { setup.run.iterations = n; setup.run.numberOfTimeSteps = n }
     if args.contains("--gpu") { setup.controls.linear.useGPU = true }
@@ -482,8 +606,8 @@ case "export":
     let fl = option("--fluent-mesh", "")
     if !fl.isEmpty { try MeshWriters.fluentMesh(pkg.mesh).write(toFile: fl, atomically: true, encoding: .utf8); print("Wrote \(fl)") }
 case "mesh-info":
-    guard args.count > 1 else { fail("mesh-info <file>") }
-    let mesh = try MeshIO.read(url: URL(fileURLWithPath: args[1]))
+    guard args.count > 1 else { fail("mesh-info <file> [--bl-first h ...]") }
+    let mesh = try readMesh(args[1])
     print(mesh.summary)
     for z in mesh.boundaryZones { print("  \(z.name) [\(z.kind.rawValue)] \(z.count) faces") }
     for z in mesh.cellZones { print("  cell zone \(z.name) [\(z.kind.rawValue)] \(z.cellCount) cells") }

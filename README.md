@@ -13,13 +13,18 @@ that reproduces published benchmarks.
 **Meshing**
 - Structured block mesher (2D slabs and 3D, graded segments, rectangular obstacles, box-defined solid/porous cell zones, named patches) and a 2D cylinder O-grid.
 - Gmsh workflow (uses `/Applications/Gmsh.app`): channel + cylinder, NACA 4-digit airfoil in a far field with boundary-layer quads, 3D pipe, and **CAD import** (STEP/IGES/BREP) for external flow (body subtracted from a box) or internal flow, with inlet/outlet/far-field/wall named selections assigned automatically.
+- **3D prism boundary layers (inflation)** on the Gmsh pipe and CAD meshes: first-layer height, growth rate and number of layers, with a y⁺ calculator that sizes the first layer. The tetrahedral mesh is pushed away from the walls along smoothed normals, the displacement is relaxed into the surrounding cells, and the gap is filled with prism stacks. The layers slide along inlets, outlets and symmetry planes. Where the volume mesh lacks room, a stack is thinned locally; the first-layer height is kept and the growth rate is reduced instead. Every insertion is checked for inverted or folded cells, and the generated meshes pass OpenFOAM `checkMesh`.
+
+
+  ![Prism layers in the turbulent pipe tutorial](Docs/prism-layers.png)
+  *Cross-section of the turbulent pipe tutorial: 14 graded prism layers (first cell at y⁺ ≈ 0.94) under the tetrahedral core, coloured by axial velocity.*
 - Importers: Fluent `.msh`/`.cas` (ASCII and binary, 2D and 3D, mixed/polygonal faces, multiple cell zones), Gmsh `.msh` 2.2/4.1 (all linear element types; higher-order reduced to corners), OpenFOAM `polyMesh` (ASCII/binary/gzip).
 - Exporters: Fluent ASCII `.msh`, OpenFOAM case (mesh, `0/`, `constant/`, `system/` for simpleFoam/pimpleFoam), ParaView `.vtu` (polyhedral cells), CSV.
 - Mesh check: Fluent-style orthogonal quality, aspect ratio, non-orthogonality, volume statistics; zone renaming/retyping.
 
 **Pressure-based solver** (cell-centred, collocated, face-based polyhedral)
 - SIMPLE, SIMPLEC, PISO; Rhie–Chow with under-relaxation and time-step consistency terms.
-- Least-squares and Green–Gauss gradients; first/second-order upwind, central, bounded central, QUICK and MUSCL convection with TVD (van Leer) bounding; over-relaxed non-orthogonal correction with automatic limiting.
+- Least-squares and Green–Gauss gradients; the pressure force uses a conservative Green–Gauss gradient with skewness-corrected face values, which is exact for linear fields like least squares, but the pressure force on any region equals the pressure integral over its boundary; first/second-order upwind, central, bounded central, QUICK and MUSCL convection with TVD (van Leer) bounding; over-relaxed non-orthogonal correction with automatic limiting.
 - Pressure interpolation: Standard (momentum-weighted at porous interfaces), Second Order (limited extrapolation), Body Force Weighted.
 - Steady and transient (first order and BDF2) with dual iterations per time step, data sampling.
 - Models: laminar, k-ω SST (Menter 2003), standard and realizable k-ε, Spalart–Allmaras; y⁺-insensitive (Reichardt) wall treatment and standard wall functions; exact wall distance (k-d tree).
@@ -38,7 +43,7 @@ that reproduces published benchmarks.
 - Metal GPU backend: fp32 AMG-preconditioned CG fully on the GPU (on-device α/β, no per-iteration sync) inside double-precision iterative refinement.
 
 **App**
-- Outline tree with task pages for every Setup/Solution/Results node, Metal graphics window (contours smooth or banded, vectors, pathlines, mesh, planes and iso-surfaces, feature-edge outlines, axis triad, five colormaps), scaled-residual and report plots, XY plots, a console with text commands, `.curlew` case packages (case + mesh + data), PNG export with legend, 14 tutorials and an in-app validation suite.
+- Outline tree with task pages for every Setup/Solution/Results node, Metal graphics window (contours smooth or banded, vectors, pathlines, mesh, planes and iso-surfaces, feature-edge outlines, axis triad, five colormaps), scaled-residual and report plots, XY plots, a console with text commands, `.curlew` case packages (case + mesh + data), PNG export with legend, 15 tutorials and an in-app validation suite.
 
 ## Validation
 
@@ -56,12 +61,20 @@ All numbers below are produced by `curlew-cli validate …` (and the app's Valid
 | Cylinder Re=100 (transient) | St / C_D mean | 0.164–0.166 / 1.33–1.35 | 0.163 / 1.326 |
 | Backward-facing step, SST | reattachment x_r/h | OpenFOAM v2606, same mesh: 5.79 | 5.64 |
 | NACA 0012, α=10°, SA (25k cells) | C_L | Ladson exp. ≈ 1.07 | 1.066 |
+| Turbulent pipe Re=20 000, SST, 14 prism layers + tetrahedra (404k cells, y⁺ 0.94) | Darcy f from dp/dx / from wall shear, x/D 5.5–8.5 | OpenFOAM v2606 kOmegaSST, identical mesh: 0.02419 / 0.02271 | 0.02415 / 0.02298 |
+| Schäfer–Turek 3D-1Z (Re=20), 582k tetrahedra | C_D / C_L | 6.1853 / 0.00940 (Bayraktar et al. 2012) | 6.267 (+1.3 %) / 0.0080 |
+| Same, 8 prism layers on the cylinder (678k cells) | C_D / C_L | 6.1853 / 0.00940 | 6.293 (+1.7 %) / 0.0098 (+4 %) |
 | Sod shock tube, 400 cells | L1 density error at t = 0.2 | exact Riemann solution | 0.0019 |
 | Mach 2.5, 15° ramp | p₂/p₁ / shock angle | 2.4696 / 36.96° (oblique-shock theory) | 2.4678 / 36.94° |
 
 Analytic checks in the unit tests: plane Poiseuille flow (profile and dp/dx within 1 %), 1D conduction with a source (error equals the expected q·Δx²/8k), composite-wall CHT (exact to 10⁻⁶ K), porous slab pressure drop (converges with refinement: 2.8 % → 0.4 % for 4× cells), Sod shock tube, cavity, mesh/solution file round trips.
 
+3D prism layers are checked with OpenFOAM `checkMesh` ("Mesh OK") and by unit tests on a tetrahedral cube: volume is conserved to 10⁻¹⁰, first-layer centres sit at h₁/2, and inlet faces gain one side quad per layer. An oversized stack is thinned without inverting or flattening cells. The 3D-1Z geometry and case are in `Examples/schafer-turek-3d`.
+
 **Notes on behaviour found during validation**
+- The pressure-force gradient matters on prism/tetrahedron meshes. With a plain least-squares pressure source, the force on the fluid in the turbulent pipe was 4.8 % smaller than the pressure difference across it. The flow was right (wall shear matched OpenFOAM), but the pressure drop was 4.7 % high. The conservative gradient matches OpenFOAM's pressure drop to 0.2 % and improves 3D-1Z lift from −75 % to −15 % (tetrahedra) and to +4 % (prisms). `methods.conservativePressureGradient = false` restores the old source.
+- The 10-diameter pipe starts from a 1/7-power profile and is not fully developed (wall shear still falls at x/D = 9). Both Curlew and OpenFOAM sit 7–12 % below the smooth-pipe correlations there. Use the identical-mesh comparison for this case, not the correlations.
+- Sphere at Re = 100 in the CAD tutorial's box (symmetry planes 3.5 D away): drag decreases with refinement (1.183 → 1.175 → 1.165 on 113k–1.03M cells with prism layers). It stays above the unconfined 1.087 because of blockage and the coarse wake. OpenFOAM on the identical tetrahedral mesh gives 1.243 (Curlew 1.203).
 - Steady RANS of the 3D mixing tee does not converge in either Curlew or OpenFOAM (the jet-in-crossflow separation is unsteady), so that tutorial runs transient.
 - The turbulent transpose stress term is optional (off by default for constant molecular viscosity): it changes results by < 1 % but slows convergence of separated flows. It is always on for non-Newtonian/Sutherland fluids.
 - Fluent-style residual normalisation can report convergence early after a potential-flow initialization; the airfoil tutorial therefore uses tight criteria — watch the force monitors.
@@ -93,7 +106,10 @@ curlew-cli tutorial flat-plate --vtu plate.vtu
 curlew-cli validate cavity --re 1000 --cells 128
 curlew-cli run case.json --mesh mesh.msh --save result.curlew --vtu result.vtu
 curlew-cli run result.curlew --continue --iterations 500
-curlew-cli mesh-cad part.step --axis 0 --max-size 0.2 --wall-size 0.02
+curlew-cli mesh-cad part.step --axis 0 --max-size 0.2 --wall-size 0.02 --bl-first 2e-4 --bl-growth 1.2 --bl-layers 12
+curlew-cli mesh-pipe --bl-first 2e-4 --bl-layers 8 --foam ./checkCase      # then OpenFOAM checkMesh there
+curlew-cli validate pipe --re 20000            # turbulent friction factor on prism layers (--tet-only to compare)
+curlew-cli run Examples/schafer-turek-3d/case.json --mesh channel.msh --bl-first 0.001 --bl-layers 8 --bl-zones cylinder
 curlew-cli export result.curlew --foam ./foamCase
 ```
 
@@ -140,7 +156,7 @@ over decades. The main gaps, grouped by area:
 - Solidification/melting, battery (MSMD, NTGK), fuel cells and electrochemistry, aeroacoustics (FW-H, broadband sources), fluid–structure interaction coupling, shell conduction.
 
 **Mesh and motion**
-- Fluent Meshing (watertight and fault-tolerant workflows, surface wrapping, poly-hexcore/mosaic meshes, 3D prism inflation layers); Curlew relies on its block mesher and Gmsh (3D boundary layers are not generated).
+- Fluent Meshing (watertight and fault-tolerant workflows, surface wrapping, poly-hexcore/mosaic meshes). Curlew relies on its block mesher and Gmsh, adding its own prism inflation on 3D walls. That inflation does not do Fluent's layer collision handling at sharp concave corners or last-ratio/aspect-ratio growth options; stacks are thinned there instead.
 - Polyhedral conversion, mesh adaption (hanging-node refinement), dynamic mesh (smoothing, layering, remeshing, 6-DOF), sliding mesh, overset, non-conformal mesh interfaces, translational/rotational periodicity.
 - Fan, radiator, porous-jump and baffle face conditions; non-reflecting boundaries; boundary profiles from files.
 

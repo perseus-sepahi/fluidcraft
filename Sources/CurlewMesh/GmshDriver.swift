@@ -20,10 +20,15 @@ public struct MeshingSettings: Codable, Sendable, Equatable {
     public var wallSize: Double = 0.01
     /// Distance over which sizes grow from wallSize to maxSize.
     public var growthDistance: Double = 0.5
-    /// Boundary layer (2D): first-cell height, growth ratio, total thickness (0 disables).
+    /// Boundary layer: first-cell height, growth ratio, total thickness (0 disables).
+    /// 2D meshes use Gmsh's BoundaryLayer field; 3D meshes get prism layers (`PrismInflation`).
     public var blFirstHeight: Double = 0
     public var blGrowth: Double = 1.2
     public var blThickness: Double = 0
+    /// 3D: number of prism layers (0 = derive from the thickness).
+    public var blLayers: Int = 0
+    /// 3D: walls to inflate (empty = all walls).
+    public var blZones: [String] = []
     /// Quad-dominant 2D meshes.
     public var quads = true
     /// Thickness of the 2D slab.
@@ -32,6 +37,17 @@ public struct MeshingSettings: Codable, Sendable, Equatable {
     public var algorithm3D = 1
 
     public init(template: MeshTemplate) { self.template = template }
+
+    public var isThreeDimensional: Bool {
+        switch template { case .pipe, .cad: return true; default: return false }
+    }
+
+    /// Prism-layer settings for 3D templates, or nil when the boundary layer is off.
+    public var inflation3D: InflationSettings? {
+        guard isThreeDimensional, blFirstHeight > 0, blLayers > 0 || blThickness > blFirstHeight else { return nil }
+        let n = blLayers > 0 ? blLayers : InflationSettings.layers(firstHeight: blFirstHeight, growth: blGrowth, thickness: blThickness)
+        return InflationSettings(firstHeight: blFirstHeight, growth: blGrowth, layers: n, zones: blZones)
+    }
 }
 
 public enum GmshDriver {
@@ -47,7 +63,10 @@ public enum GmshDriver {
 
     public static var isAvailable: Bool { executable != nil }
 
-    public struct Result: Sendable { public var mesh: Mesh; public var script: String; public var log: String }
+    public struct Result: Sendable {
+        public var mesh: Mesh; public var script: String; public var log: String
+        public var inflation: InflationReport?
+    }
 
     /// Generate the .geo script for the settings.
     public static func script(_ s: MeshingSettings) throws -> (geo: String, dim: Int) {
@@ -237,8 +256,13 @@ public enum GmshDriver {
             let errs = text.split(separator: "\n").filter { $0.contains("Error") }.prefix(5).joined(separator: "\n")
             throw MeshError.io("Gmsh failed (status \(p.terminationStatus)).\n\(errs)")
         }
-        let mesh = try GmshReader.read(url: mshURL, depth2D: s.depth2D)
-        return Result(mesh: mesh, script: geo, log: text)
+        guard dim == 3, let inflation = s.inflation3D else {
+            return Result(mesh: try GmshReader.read(url: mshURL, depth2D: s.depth2D), script: geo, log: text)
+        }
+        var parsed = try GmshReader.parse(data: Data(contentsOf: mshURL))
+        let report = try PrismInflation.inflate(&parsed, settings: inflation)
+        log?(report.description + "\n")
+        return Result(mesh: try GmshReader.build(parsed), script: geo, log: text + "\n" + report.description, inflation: report)
     }
 
     /// NACA 4-digit coordinates (chord 1), closed trailing edge, cosine spacing; TE -> upper -> LE -> lower -> TE (excluded).

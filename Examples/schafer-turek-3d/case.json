@@ -1,0 +1,21 @@
+{
+  "title": "Schafer-Turek 3D-1Z (Re = 20)",
+  "models": { "viscous": "laminar" },
+  "materials": [ { "name": "st-fluid", "density": 1.0, "viscosity": 0.001 } ],
+  "cellZones": { "fluid": { "material": "st-fluid" } },
+  "boundaries": {
+    "inlet":  { "type": "velocity-inlet", "velocityMagnitude": "16*0.45*y*z*(0.41-y)*(0.41-z)/0.41^4" },
+    "outlet": { "type": "pressure-outlet" },
+    "cylinder": { "type": "wall" },
+    "wall": { "type": "wall" }
+  },
+  "methods": { "coupling": "SIMPLEC", "momentum": "second-order-upwind" },
+  "controls": { "urf": { "pressure": 1.0, "momentum": 0.8 } },
+  "reference": { "area": 0.041, "velocity": 0.2, "density": 1.0, "length": 0.1 },
+  "reports": [
+    { "name": "cd", "kind": "drag-coefficient", "zones": ["cylinder"], "direction": [1, 0, 0] },
+    { "name": "cl", "kind": "lift-coefficient", "zones": ["cylinder"], "direction": [0, 1, 0] }
+  ],
+  "residuals": { "continuity": 1e-7, "velocity": 1e-9 },
+  "run": { "iterations": 3000 }
+}
