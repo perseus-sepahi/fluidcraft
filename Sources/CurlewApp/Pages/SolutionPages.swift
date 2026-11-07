@@ -2,6 +2,7 @@ import SwiftUI
 import CurlewMesh
 import CurlewLinear
 import CurlewSolver
+import CurlewFoam
 
 struct MethodsPage: View {
     @Bindable var ws: Workspace
@@ -290,6 +291,18 @@ struct RunCalculationPage: View {
     @Bindable var ws: Workspace
     var body: some View {
         Form {
+            Section("Backend") {
+                Picker("Solve with", selection: $ws.setup.general.backend) {
+                    ForEach(SolverBackend.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                if ws.setup.general.backend == .openfoam {
+                    let app = FoamCaseWriter.resolvedApplication(ws.setup)
+                    LabeledContent("Application", value: "\(app.rawValue) on \(ws.setup.openfoam.cores) core\(ws.setup.openfoam.cores == 1 ? "" : "s")")
+                    Text("Case: \(ws.foamCaseDirectory.path)").font(.caption).foregroundStyle(.secondary)
+                    Button("OpenFOAM settings…") { ws.selection = .openfoam }.buttonStyle(.link)
+                }
+            }
             if ws.setup.general.time == .steady {
                 Section("Steady") {
                     IntField(label: "Number of iterations", value: $ws.setup.run.iterations)
@@ -317,7 +330,7 @@ struct RunCalculationPage: View {
                     }
                 }
                 LabeledContent("Iterations so far", value: "\(ws.currentIteration)")
-                if !ws.initialized { Text("The solution will be initialized first.").font(.caption).foregroundStyle(.secondary) }
+                if !ws.initialized && ws.setup.general.backend == .curlew { Text("The solution will be initialized first.").font(.caption).foregroundStyle(.secondary) }
             }
         }
         .formStyle(.grouped)

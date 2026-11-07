@@ -122,6 +122,13 @@ public struct BlockMeshSpec: Codable, Sendable, Equatable {
         }}}
         guard nCells > 0 else { throw MeshError.topology("obstacles removed every cell") }
         var zoneOfCell = [Int32](repeating: 0, count: Int(nCells))
+        // boxes with the same name form one zone (e.g. the base and fins of a heat sink)
+        var zoneNames: [String] = [], zoneKinds: [CellZoneKind] = []
+        let boxZone = cellZones.map { r -> Int32 in
+            if let i = zoneNames.firstIndex(of: r.name) { return Int32(i + 1) }
+            zoneNames.append(r.name); zoneKinds.append(r.kind)
+            return Int32(zoneNames.count)
+        }
         if !cellZones.isEmpty {
             for k in 0..<nz { for j in 0..<ny { for i in 0..<nx {
                 let id = cellID[ci(i, j, k)]
@@ -129,7 +136,7 @@ public struct BlockMeshSpec: Codable, Sendable, Equatable {
                 let c = Vec3(0.5 * (xs[i] + xs[i + 1]), 0.5 * (ys[j] + ys[j + 1]), 0.5 * (zs[k] + zs[k + 1]))
                 for (zi, r) in cellZones.enumerated() where r.box.count == 6 {
                     if c.x > r.box[0] && c.x < r.box[3] && c.y > r.box[1] && c.y < r.box[4] && (twoD || (c.z > r.box[2] && c.z < r.box[5])) {
-                        zoneOfCell[Int(id)] = Int32(zi + 1)
+                        zoneOfCell[Int(id)] = boxZone[zi]
                     }
                 }
             }}}
@@ -151,7 +158,7 @@ public struct BlockMeshSpec: Codable, Sendable, Equatable {
         }}}
         b.nCells = Int(nCells)
         if !cellZones.isEmpty {
-            b.cellZones = [MeshBuilder.CellZoneSpec(name: "fluid", kind: .fluid)] + cellZones.map { MeshBuilder.CellZoneSpec(name: $0.name, kind: $0.kind) }
+            b.cellZones = [MeshBuilder.CellZoneSpec(name: "fluid", kind: .fluid)] + zip(zoneNames, zoneKinds).map { MeshBuilder.CellZoneSpec(name: $0.0, kind: $0.1) }
             b.cellZoneOfCell = zoneOfCell
         }
 

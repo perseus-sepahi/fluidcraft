@@ -47,6 +47,10 @@ public final class PressureBasedSolver: @unchecked Sendable {
     var wallIndexOfFace: [Int32]
     let zoneMaterial: [Material]
     let zoneSettings: [CellZoneSettings]
+    /// Actuator disks: zone index, the cell sampled for the free-stream speed (-1: use the
+    /// reference speed), ½ρA·Ct / V, and the thrust direction.
+    struct DiskSource { var zone: Int; var monitorCell: Int; var coefficient: Double; var direction: Vec3; var referenceVelocity: Double }
+    let disks: [DiskSource]
     let hasSolids: Bool
     let refCell: Int
 
@@ -103,14 +107,37 @@ public final class PressureBasedSolver: @unchecked Sendable {
         // Zones
         var mats: [Material] = []
         var zs: [CellZoneSettings] = []
+        var disks: [DiskSource] = []
         for z in mesh.cellZones {
-            let cs = s.cellZones[z.name] ?? CellZoneSettings()
+            var cs = s.cellZones[z.name] ?? CellZoneSettings()
+            if let disk = cs.actuatorDisk {
+                // actuator disk: thrust ½ ρ A Ct U∞² spread over the zone volume, against the disk
+                // direction. U∞ is sampled at the upstream monitor point every iteration (as
+                // OpenFOAM's actuationDiskSource), so a turbine in a wake feels the wake speed.
+                var vol = 0.0
+                for c in 0..<mesh.nCells where mesh.cellZones[Int(mesh.cellZone[c])].name == z.name { vol += mesh.cellVolumes[c] }
+                let rho = s.material(named: cs.material)?.density ?? 1.225
+                let d = normalized(Vec3(disk.direction[0], disk.direction[1], disk.direction[2]))
+                let up = Vec3(disk.upstreamPoint.count > 0 ? disk.upstreamPoint[0] : 0, disk.upstreamPoint.count > 1 ? disk.upstreamPoint[1] : 0,
+                              disk.upstreamPoint.count > 2 ? disk.upstreamPoint[2] : 0)
+                let (lo, hi) = (mesh.bounds.min, mesh.bounds.max)
+                let inside = up.x >= lo.x && up.x <= hi.x && up.y >= lo.y && up.y <= hi.y && up.z >= lo.z && up.z <= hi.z
+                var monitor = -1
+                if inside {
+                    var best = Double.infinity
+                    for c in 0..<mesh.nCells { let dd = norm(mesh.cellCentres[c] - up); if dd < best { best = dd; monitor = c } }
+                }
+                disks.append(DiskSource(zone: zs.count, monitorCell: monitor,
+                                        coefficient: 0.5 * rho * disk.diskArea * disk.thrustCoefficient / max(vol, 1e-300),
+                                        direction: d, referenceVelocity: disk.referenceVelocity))
+            }
             zs.append(cs)
             guard let mat = s.material(named: cs.material) else { throw SolverError("cell zone '\(z.name)' uses unknown material '\(cs.material)'") }
             mats.append(mat)
         }
         zoneMaterial = mats
         zoneSettings = zs
+        self.disks = disks
         var solid = [Bool](repeating: false, count: mesh.nCells)
         for c in 0..<mesh.nCells { solid[c] = zs[Int(mesh.cellZone[c])].kind == .solid }
         isSolidCell = solid
@@ -360,9 +387,11 @@ public final class PressureBasedSolver: @unchecked Sendable {
 
     func computeGradients() {
         let scheme = setup.methods.gradient
-        Gradient.compute(geo, state.p, boundary: state.bP, scheme: scheme, into: &gradP)
+        // fluid cells see the solid as a wall, not as a neighbour with a (meaningless) pressure
+        let mask = hasSolids ? isInterfaceFace : nil
+        Gradient.compute(geo, state.p, boundary: state.bP, scheme: scheme, into: &gradP, interface: mask)
         if scheme == .leastSquares && setup.methods.conservativePressureGradient {
-            Gradient.conservative(geo, state.p, boundary: state.bP, reconstruction: gradP, into: &gradPScratch)
+            Gradient.conservative(geo, state.p, boundary: state.bP, reconstruction: gradP, into: &gradPScratch, interface: mask)
             swap(&gradP, &gradPScratch)
         }
         if setup.methods.pressure == .standard && aP.count == mesh.nCells && !resistiveCells.isEmpty {
@@ -453,6 +482,17 @@ public final class PressureBasedSolver: @unchecked Sendable {
     /// Assembly is data-parallel in two phases: (A) every interior face computes its
     /// coefficients and explicit fluxes independently; (B) every cell gathers its faces
     /// through the cell->face connectivity and adds boundary and volume terms.
+    /// Thrust per unit volume [N/m³] of each zone that is an actuator disk (nil otherwise), from
+    /// the current wind speed at its monitor point.
+    public func actuatorDiskForceDensity() -> [Vec3?] {
+        var out = [Vec3?](repeating: nil, count: zoneSettings.count)
+        for d in disks {
+            let U = d.monitorCell >= 0 ? max(0, dot(state.u[d.monitorCell], d.direction)) : d.referenceVelocity
+            out[d.zone] = -(d.coefficient * U * U) * d.direction
+        }
+        return out
+    }
+
     func solveMomentum(urf: Double) -> [Double] {
         let m = mesh, g = geo
         let nI = g.nInternal, nC = g.nCells
@@ -527,6 +567,7 @@ public final class PressureBasedSolver: @unchecked Sendable {
 
         // Zone source closures (compiled once)
         let zoneMom: [[((Vec3) -> Double)?]] = zoneSettings.map { zs in zs.momentumSource.map { sourceFunction($0) } }
+        let diskForce = actuatorDiskForceDensity()
         let transient = isTransient
         let dt = setup.run.timeStepSize
         let second = setup.methods.transient == .secondOrderImplicit && state.timeStep > 1
@@ -628,6 +669,7 @@ public final class PressureBasedSolver: @unchecked Sendable {
                         let a = normalized(Vec3(zs.rotationAxisDirection[0], zs.rotationAxisDirection[1], zs.rotationAxisDirection[2]))
                         b -= rho[c] * cross(zs.rotationSpeed * a, uc) * vol   // absolute-velocity formulation: -rho (Omega x u)
                     }
+                    if let fd = diskForce[zi] { b += fd * vol }
                     let srcs = zoneMom[zi]
                     if srcs.contains(where: { $0 != nil }) {
                         let cc = m.cellCentres[c]
@@ -888,9 +930,12 @@ public final class PressureBasedSolver: @unchecked Sendable {
         }}
         // Cell velocity and pressure correction
         if correctVelocity {
-            Gradient.compute(g, pCorr, boundary: pcb, scheme: setup.methods.gradient, into: &gradPc)
+            // as for p itself, a fluid cell must not see the solid neighbour's p' (held at 0):
+            // without the mask every cell beside a solid gets a spurious correction into the wall
+            let mask = hasSolids ? isInterfaceFace : nil
+            Gradient.compute(g, pCorr, boundary: pcb, scheme: setup.methods.gradient, into: &gradPc, interface: mask)
             if setup.methods.gradient == .leastSquares && setup.methods.conservativePressureGradient {
-                Gradient.conservative(g, pCorr, boundary: pcb, reconstruction: gradPc, into: &gradPScratch)
+                Gradient.conservative(g, pCorr, boundary: pcb, reconstruction: gradPc, into: &gradPScratch, interface: mask)
                 swap(&gradPc, &gradPScratch)
             }
         }
@@ -960,17 +1005,25 @@ public final class PressureBasedSolver: @unchecked Sendable {
         }
         var gamma = [Double](repeating: 0, count: g.nFaces)
         var cpF = [Double](repeating: 0, count: g.nFaces)
+        // orthotropic materials: conductivity along the face normal, k_n = Σ k_i n_i²
+        let aniso = zoneMaterial.contains { $0.anisotropicConductivity != nil }
+        @inline(__always) func kAlong(_ c: Int, _ f: Int) -> Double {
+            guard aniso else { return kEff[c] }
+            let mat = zoneMaterial[Int(m.cellZone[c])]
+            guard mat.anisotropicConductivity != nil else { return kEff[c] }
+            return kEff[c] - state.conductivity[c] + mat.conductivity(along: normalized(m.faceAreas[f]))
+        }
         for f in 0..<nI {
             let P = Int(m.owner[f]), N = Int(m.neighbour[f])
             let w = g.weight[f]
             // harmonic mean (exact for conjugate interfaces)
-            gamma[f] = 1 / ((1 - w) / max(kEff[P], 1e-300) + w / max(kEff[N], 1e-300))
+            gamma[f] = 1 / ((1 - w) / max(kAlong(P, f), 1e-300) + w / max(kAlong(N, f), 1e-300))
             cpF[f] = w * state.cp[P] + (1 - w) * state.cp[N]
         }
         for f in nI..<g.nFaces {
             let P = Int(m.owner[f])
             let bf = f - nI
-            var ke = kEff[P]
+            var ke = kAlong(P, f)
             // turbulent wall: thermal wall function through the effective conductivity
             if setup.models.viscous.isTurbulent, wallIndexOfBoundary[bf] >= 0 {
                 ke = wallConductivity(Int(wallIndexOfBoundary[bf]), cell: P)

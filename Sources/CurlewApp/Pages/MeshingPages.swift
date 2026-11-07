@@ -2,6 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import CurlewMesh
 import CurlewSolver
+import CurlewFoam
 
 struct MeshGenerationPage: View {
     @Bindable var ws: Workspace
@@ -38,34 +39,17 @@ struct MeshGenerationPage: View {
     @State private var cadExternal = true
     @State private var cadAxis = 0
     @State private var ch = [2.2, 0.41, 0.2, 0.2, 0.05]
+    @State private var cadMesher = 0          // 0 Gmsh, 1 snappyHexMesh
+    @State private var snappy = SnappySettings()
 
     var body: some View {
         Form {
-            Section("Start from a Tutorial") {
-                ForEach(TutorialCatalog.all) { t in
-                    Button {
-                        ws.loadTutorial(t)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack {
-                                Text(t.title).fontWeight(.medium)
-                                if t.needsGmsh { Text("Gmsh").font(.caption2).padding(.horizontal, 4).background(.quaternary, in: Capsule()) }
-                            }
-                            Text(t.summary).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.leading)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(ws.isRunning || ws.isMeshing || (t.needsGmsh && !GmshDriver.isAvailable))
-                }
-            }
             Section("Generate a Mesh") {
                 Picker("Method", selection: $method) {
                     Text("Block (structured, Cartesian)").tag(0)
                     Text("Cylinder O-grid (2D)").tag(1)
                     Text("Gmsh templates").tag(2)
-                    Text("CAD geometry (Gmsh)").tag(3)
+                    Text("CAD geometry, mesh only (STEP, IGES, STL, OBJ, …)").tag(3)
                 }
             }
             switch method {
@@ -76,7 +60,7 @@ struct MeshGenerationPage: View {
             }
             Section("Import") {
                 Button("Import Mesh File…") { importMesh() }
-                Text("Fluent .msh/.cas (ASCII or binary), Gmsh .msh (v2.2/v4.1), OpenFOAM polyMesh directory.").font(.caption).foregroundStyle(.secondary)
+                Text("Fluent .msh/.cas (ASCII or binary), Gmsh .msh (v2.2/v4.1), OpenFOAM polyMesh directory. CAD files: choose CAD geometry above.").font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -217,37 +201,87 @@ struct MeshGenerationPage: View {
 
     var cadSection: some View {
         Group {
-            Section("CAD Geometry (STEP / IGES / BREP)") {
+            Section("CAD Geometry") {
                 HStack {
                     Text(cadPath.isEmpty ? "No file" : (cadPath as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle)
                     Spacer()
                     Button("Choose…") {
                         let p = NSOpenPanel()
-                        p.allowedContentTypes = ["step", "stp", "iges", "igs", "brep"].compactMap { UTType(filenameExtension: $0) }
-                        if p.runModal() == .OK, let u = p.url { cadPath = u.path }
+                        p.allowedContentTypes = CADFormat.extensions.compactMap { UTType(filenameExtension: $0) }
+                        p.message = "STEP, IGES, BREP, FreeCAD (exact CAD); STL, OBJ, PLY, OFF, 3MF, glTF, AMF, VTK (triangulated); native SolidWorks/CATIA/Parasolid/… with a converter (Settings)"
+                        if p.runModal() == .OK, let u = p.url { cadPath = u.path; guessUnit() }
                     }
                 }
+                if let f = CADFormat.detect(URL(fileURLWithPath: cadPath)) {
+                    LabeledContent("Format", value: f.displayName + (f.isBRep ? " — exact geometry (OpenCASCADE)" : " — triangulated surface"))
+                }
+                Picker("File units", selection: $gm.cadUnit) {
+                    ForEach(CADUnit.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .disabled(CADFormat.detect(URL(fileURLWithPath: cadPath)) == .threeMF)
                 Picker("Flow type", selection: $cadExternal) {
                     Text("External flow around the body (box enclosure)").tag(true)
                     Text("Internal flow (body is the fluid volume)").tag(false)
                 }
                 Picker("Flow direction", selection: $cadAxis) { Text("+x").tag(0); Text("+y").tag(1); Text("+z").tag(2) }.pickerStyle(.segmented)
-                Text("Named selections are created automatically: inlet/outlet on the extreme faces along the flow direction, \(cadExternal ? "farfield on the other box faces and body on the geometry" : "wall on all other faces").")
+                Picker("Mesher", selection: $cadMesher) {
+                    Text("Gmsh — tetrahedra + prism layers").tag(0)
+                    Text("snappyHexMesh — hex-dominant (OpenFOAM)").tag(1)
+                }
+                Text(cadExternal
+                     ? "Named selections are created automatically: inlet/outlet on the box faces along the flow direction, farfield on the other box faces, and the body's own regions (STL solids, OBJ groups, 3MF/glTF objects) as walls."
+                     : "Openings are found automatically: every flat cap at the ends of the flow direction is an inlet or outlet, and smaller caps on the other sides (an elbow's exit, a tee's branch) are extra outlets (outlet_ymax, …) you can retype under Boundary Conditions. Surfaces already named inlet/outlet in the file are kept.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Section("Sizing") {
-                sizingFields
-                InflationFields(ws: ws, gm: $gm, referenceLength: 1)
-            }
-            Section {
-                Button(ws.isMeshing ? "Meshing…" : "Mesh Geometry") {
-                    var s = gm
-                    s.template = .cad(path: cadPath, external: cadExternal, flowAxis: cadAxis, padding: [3, 8, 3, 3, 3, 3])
-                    ws.generateMesh(s)
+            if cadMesher == 0 {
+                Section("Sizing (Gmsh)") {
+                    sizingFields
+                    if let f = CADFormat.detect(URL(fileURLWithPath: cadPath)), !f.isBRep {
+                        NumberField(label: "Feature angle (patch split)", value: $gm.featureAngle, unit: "°")
+                    }
+                    InflationFields(ws: ws, gm: $gm, referenceLength: 1)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(cadPath.isEmpty || ws.isMeshing || !GmshDriver.isAvailable)
+                Section {
+                    Button(ws.isMeshing ? "Meshing…" : "Mesh Geometry with Gmsh") {
+                        var s = gm
+                        s.template = .cad(path: cadPath, external: cadExternal, flowAxis: cadAxis, padding: [3, 8, 3, 3, 3, 3])
+                        ws.generateMesh(s)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(cadPath.isEmpty || ws.isMeshing || !GmshDriver.isAvailable)
+                }
+            } else {
+                SnappySettingsSection(snappy: $snappy, external: cadExternal)
+                Section {
+                    if ws.foamInstallations.isEmpty { Label("No OpenFOAM installation found (OpenFOAM page › Installation).", systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
+                    Button(ws.isMeshing ? "Meshing…" : "Mesh Geometry with snappyHexMesh") {
+                        var s = snappy
+                        s.path = cadPath; s.unit = gm.cadUnit; s.external = cadExternal; s.flowAxis = cadAxis
+                        ws.meshWithSnappy(s)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(cadPath.isEmpty || ws.isMeshing || ws.isRunning)
+                    Text("Runs surfaceFeatureExtract, blockMesh, snappyHexMesh (castellate, snap, layers) and checkMesh in \(ws.foamCaseDirectory.deletingLastPathComponent().path), then imports the polyMesh. STEP/IGES/BREP are tessellated with Gmsh first.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
+        }
+    }
+
+    /// Large numbers in a CAD file usually mean millimetres.
+    func guessUnit() {
+        guard let f = CADFormat.detect(URL(fileURLWithPath: cadPath)), !f.isBRep, f != .threeMF,
+              let surf = try? SurfaceReader.read(url: URL(fileURLWithPath: cadPath)) else { return }
+        let (lo, hi) = surf.bounds
+        let size = max(hi.x - lo.x, hi.y - lo.y, hi.z - lo.z)
+        if size > 50 { gm.cadUnit = .millimetre; ws.log("\((cadPath as NSString).lastPathComponent): \(surf.triangleCount) triangles, size \(NumberField.format(size)) — assuming millimetres (change File units if not).") }
+        else { ws.log("\((cadPath as NSString).lastPathComponent): \(surf.triangleCount) triangles in \(surf.regionNames.count) region(s): \(surf.regionNames.joined(separator: ", ")); size \(NumberField.format(size)).") }
+        let open = surf.openOrNonManifoldEdges
+        if open > 0 { ws.log("  \(open) open or non-manifold edges — the surface is not watertight.", .warning) }
+        if !cadExternal {
+            let ops = surf.detectOpenings(flowAxis: cadAxis)
+            ws.log("  openings for internal flow: " + (ops.isEmpty ? "none found (flat caps on the bounding box)" : ops.map { String(format: "%@ (%.3g m²)", $0.name as NSString, $0.area) }.joined(separator: ", ")))
         }
     }
 
@@ -388,6 +422,55 @@ struct InflationFields: View {
             }
             Text("All walls are inflated; inlets, outlets and symmetry planes are followed by the layers. Low-Re models (SST, Spalart–Allmaras) want y+ ≈ 1.")
                 .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
+
+/// snappyHexMesh controls for CAD meshing.
+struct SnappySettingsSection: View {
+    @Binding var snappy: SnappySettings
+    var external: Bool
+    var body: some View {
+        Section("snappyHexMesh") {
+            NumberField(label: "Background cell size (0 = automatic)", value: $snappy.baseCellSize, unit: "m")
+            Stepper("Surface refinement: level \(snappy.surfaceLevelMin) – \(snappy.surfaceLevelMax)", onIncrement: { snappy.surfaceLevelMax += 1; snappy.surfaceLevelMin += 1 },
+                    onDecrement: { snappy.surfaceLevelMin = max(0, snappy.surfaceLevelMin - 1); snappy.surfaceLevelMax = max(snappy.surfaceLevelMin, snappy.surfaceLevelMax - 1) })
+            Stepper("Maximum surface level: \(snappy.surfaceLevelMax)", value: $snappy.surfaceLevelMax, in: snappy.surfaceLevelMin...10)
+            Stepper("Feature edge level: \(snappy.featureLevel)", value: $snappy.featureLevel, in: 0...10)
+            NumberField(label: "Feature included angle", value: $snappy.includedAngle, unit: "°")
+            Stepper("Cells between levels: \(snappy.nCellsBetweenLevels)", value: $snappy.nCellsBetweenLevels, in: 1...8)
+            if external {
+                Toggle("Refinement box around body and wake", isOn: $snappy.refinementBox)
+                if snappy.refinementBox {
+                    Stepper("Box level: \(snappy.refinementBoxLevel)", value: $snappy.refinementBoxLevel, in: 0...8)
+                    NumberField(label: "Box padding (body lengths)", value: $snappy.refinementBoxPadding)
+                    NumberField(label: "Wake length (body lengths)", value: $snappy.wakeLength)
+                }
+                TextField("Domain padding −x +x −y +y −z +z (body lengths)", text: Binding(
+                    get: { snappy.padding.map { NumberField.format($0) }.joined(separator: " ") },
+                    set: { let v = $0.split(separator: " ").compactMap { Double($0) }; if v.count == 6 { snappy.padding = v } }))
+                    .textFieldStyle(.roundedBorder)
+            }
+        }
+        Section("snappyHexMesh Layers and Quality") {
+            Stepper("Prism layers: \(snappy.layers)", value: $snappy.layers, in: 0...30)
+            if snappy.layers > 0 {
+                NumberField(label: "Expansion ratio", value: $snappy.expansionRatio)
+                NumberField(label: "First layer thickness (0 = relative sizes)", value: $snappy.firstLayerThickness, unit: "m")
+                if snappy.firstLayerThickness == 0 {
+                    NumberField(label: "Final layer thickness (relative)", value: $snappy.finalLayerThickness)
+                    NumberField(label: "Minimum thickness (relative)", value: $snappy.minThickness)
+                }
+            }
+            NumberField(label: "maxNonOrtho", value: $snappy.maxNonOrtho, unit: "°")
+            NumberField(label: "maxInternalSkewness", value: $snappy.maxInternalSkewness)
+            NumberField(label: "maxBoundarySkewness", value: $snappy.maxBoundarySkewness)
+            Stepper("Cores: \(snappy.cores)", value: $snappy.cores, in: 1...max(1, ProcessInfo.processInfo.activeProcessorCount))
+            TextField("locationInMesh x y z (empty = automatic)", text: Binding(
+                get: { snappy.locationInMesh.map { NumberField.format($0) }.joined(separator: " ") },
+                set: { let v = $0.split(separator: " ").compactMap { Double($0) }; snappy.locationInMesh = v.count == 3 ? v : [] }))
+                .textFieldStyle(.roundedBorder)
         }
     }
 }

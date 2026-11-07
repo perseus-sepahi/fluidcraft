@@ -7,6 +7,13 @@ struct GeneralPage: View {
     var body: some View {
         Form {
             Section("Solver") {
+                Picker("Backend", selection: $ws.setup.general.backend) {
+                    ForEach(SolverBackend.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                if ws.setup.general.backend == .openfoam {
+                    Button("OpenFOAM settings…") { ws.selection = .openfoam }.buttonStyle(.link)
+                }
                 Picker("Type", selection: $ws.setup.general.solver) {
                     Text("Pressure-Based").tag(SolverType.pressureBased)
                     Text("Density-Based").tag(SolverType.densityBased)
@@ -205,6 +212,17 @@ struct MaterialEditor: View {
                 }
                 NumberField(label: "Cp (specific heat)", value: $material.specificHeat, unit: "J/kg·K")
                 NumberField(label: "Thermal conductivity", value: $material.thermalConductivity, unit: "W/m·K")
+                if material.kind == .solid {
+                    Toggle("Orthotropic conductivity (kx, ky, kz)", isOn: Binding(
+                        get: { material.anisotropicConductivity != nil },
+                        set: { material.anisotropicConductivity = $0 ? Array(repeating: material.thermalConductivity, count: 3) : nil }))
+                    if material.anisotropicConductivity != nil {
+                        VectorField(label: "Conductivity along x, y, z", value: Binding(
+                            get: { material.anisotropicConductivity ?? [] }, set: { material.anisotropicConductivity = $0 }), unit: "W/m·K")
+                        Text("For laminates such as FR-4 circuit boards (high in-plane, low through the thickness). OpenFOAM: heSolidThermo constAnIso.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 if material.kind == .fluid {
                     NumberField(label: "Thermal expansion coefficient", value: $material.thermalExpansion, unit: "1/K")
                     NumberField(label: "Molecular weight", value: $material.molecularWeight, unit: "kg/kmol")
@@ -270,6 +288,20 @@ struct CellZoneEditor: View {
                         VectorField(label: "Rotation axis direction", value: z.rotationAxisDirection)
                     }
                 }
+                Section("Actuator Disk (wind turbine)") {
+                    Toggle("Actuator disk", isOn: Binding(get: { z.wrappedValue.actuatorDisk != nil }, set: { z.wrappedValue.actuatorDisk = $0 ? ActuatorDisk() : nil }))
+                    if z.wrappedValue.actuatorDisk != nil {
+                        let d = Binding(get: { z.wrappedValue.actuatorDisk ?? ActuatorDisk() }, set: { z.wrappedValue.actuatorDisk = $0 })
+                        VectorField(label: "Thrust direction (downstream)", value: d.direction)
+                        NumberField(label: "Thrust coefficient Ct", value: d.thrustCoefficient)
+                        NumberField(label: "Power coefficient Cp", value: d.powerCoefficient)
+                        NumberField(label: "Rotor area", value: d.diskArea, unit: "m²")
+                        NumberField(label: "Reference wind speed", value: d.referenceVelocity, unit: "m/s")
+                        VectorField(label: "Upstream monitor point", value: d.upstreamPoint, unit: "m")
+                        Text("Thrust T = ½ρA·Ct·U² spread over the zone's cells. Curlew uses the reference speed; OpenFOAM (actuationDiskSource, Froude) samples the wind at the monitor point.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 Section("Source Terms") {
                     QuantityVectorField(label: "Momentum source", value: z.momentumSource, unit: "N/m³")
                 }
@@ -333,6 +365,7 @@ struct BoundaryEditor: View {
                 .pickerStyle(.segmented).labelsHidden()
             }
             if tab == 0 {
+                PeriodicSection(ws: ws, name: name, bc: bc)
                 Section("Momentum") {
                     switch t {
                     case .velocityInlet:
@@ -340,7 +373,20 @@ struct BoundaryEditor: View {
                             Text("Magnitude, normal to boundary").tag(VelocitySpecification.magnitudeNormal)
                             Text("Components").tag(VelocitySpecification.components)
                         }
-                        if bc.wrappedValue.velocitySpecification == .magnitudeNormal {
+                        Toggle("Atmospheric boundary layer (log-law wind profile)", isOn: Binding(
+                            get: { bc.wrappedValue.atmosphericBoundaryLayer != nil },
+                            set: { bc.wrappedValue.atmosphericBoundaryLayer = $0 ? ABLProfile() : nil }))
+                        if bc.wrappedValue.atmosphericBoundaryLayer != nil {
+                            let abl = Binding(get: { bc.wrappedValue.atmosphericBoundaryLayer ?? ABLProfile() }, set: { bc.wrappedValue.atmosphericBoundaryLayer = $0 })
+                            NumberField(label: "Reference wind speed", value: abl.referenceVelocity, unit: "m/s")
+                            NumberField(label: "Reference height", value: abl.referenceHeight, unit: "m")
+                            NumberField(label: "Roughness length z₀", value: abl.roughnessLength, unit: "m")
+                            NumberField(label: "Ground level (displacement)", value: abl.displacement, unit: "m")
+                            VectorField(label: "Wind direction", value: abl.flowDirection)
+                            VectorField(label: "Up direction", value: abl.verticalDirection)
+                            Text("Richards–Hoxey neutral profile: U = u*/κ ln((z+z₀)/z₀), with matching k and ε (or ω). OpenFOAM: atmBoundaryLayerInlet* conditions.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else if bc.wrappedValue.velocitySpecification == .magnitudeNormal {
                             QuantityField(label: "Velocity magnitude", value: bc.velocityMagnitude, unit: "m/s")
                         } else {
                             QuantityVectorField(label: "Velocity", value: bc.velocity, unit: "m/s")
@@ -367,6 +413,11 @@ struct BoundaryEditor: View {
                         }
                         Picker("Shear condition", selection: bc.shearCondition) {
                             Text("No Slip").tag(ShearCondition.noSlip); Text("Specified Shear (zero)").tag(ShearCondition.specifiedShear)
+                        }
+                        NumberField(label: "Aerodynamic roughness z₀ (0 = smooth)", value: bc.roughnessLength, unit: "m")
+                        if bc.wrappedValue.roughnessLength > 0 {
+                            Text("Rough terrain, used by OpenFOAM's atmNutkWallFunction (k-ε / k-ω cases). Curlew's own solver treats the wall as smooth.")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                     case .pressureFarField:
                         QuantityField(label: "Gauge pressure", value: bc.gaugePressure, unit: "Pa")
@@ -529,5 +580,47 @@ struct ReferenceValuesPage: View {
             ws.setup.reference.viscosity = mat.viscosity
         }
         if let t = b.temperature.constantValue { ws.setup.reference.temperature = t }
+    }
+}
+
+
+/// Periodic pairing of a patch (OpenFOAM cyclicAMI).
+struct PeriodicSection: View {
+    @Bindable var ws: Workspace
+    let name: String
+    let bc: Binding<BoundarySettings>
+    var partnerOfOther: String? {
+        ws.setup.boundaries.first { $0.value.periodic?.partner == name }?.key
+    }
+    var body: some View {
+        Section("Periodic (OpenFOAM cyclicAMI)") {
+            if let other = partnerOfOther {
+                Text("Periodic partner of \(other); its settings define the pair.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                Picker("Periodic with", selection: Binding(
+                    get: { bc.wrappedValue.periodic?.partner ?? "" },
+                    set: { p in bc.wrappedValue.periodic = p.isEmpty ? nil : (bc.wrappedValue.periodic.map { var l = $0; l.partner = p; return l } ?? PeriodicLink(partner: p)) })) {
+                    Text("Not periodic").tag("")
+                    ForEach((ws.mesh?.boundaryZones ?? []).filter { $0.name != name && $0.kind != .empty }.map(\.name), id: \.self) { Text($0).tag($0) }
+                }
+                if bc.wrappedValue.periodic != nil {
+                    let l = Binding(get: { bc.wrappedValue.periodic ?? PeriodicLink() }, set: { bc.wrappedValue.periodic = $0 })
+                    Picker("Transform", selection: l.rotational) { Text("Translation").tag(false); Text("Rotation").tag(true) }.pickerStyle(.segmented)
+                    if l.wrappedValue.rotational {
+                        VectorField(label: "Rotation axis", value: l.axis)
+                        VectorField(label: "Rotation centre", value: l.centre, unit: "m")
+                        NumberField(label: "Angle onto the partner", value: l.angle, unit: "°")
+                    } else {
+                        Toggle("Translation from the patch centroids", isOn: Binding(get: { l.wrappedValue.separation == nil },
+                                                                                   set: { l.wrappedValue.separation = $0 ? nil : [0, 0, 0] }))
+                        if l.wrappedValue.separation != nil {
+                            VectorField(label: "Translation onto the partner", value: Binding(get: { l.wrappedValue.separation ?? [0, 0, 0] }, set: { l.wrappedValue.separation = $0 }), unit: "m")
+                        }
+                    }
+                    Text("Both patches become a cyclicAMI pair (matching or non-matching faces). A closed periodic flow needs a driving force: OpenFOAM page › Baffles and Periodic Flow › Mean velocity.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 }

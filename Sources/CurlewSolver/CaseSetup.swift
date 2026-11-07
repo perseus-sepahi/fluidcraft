@@ -9,6 +9,8 @@ public enum TimeMode: String, Codable, CaseIterable, Sendable { case steady, tra
 
 public struct GeneralSettings: Codable, Sendable, Equatable {
     public var solver: SolverType = .pressureBased
+    /// The solver: an installed OpenFOAM (default, see `FoamSettings`) or Curlew's own solver.
+    public var backend: SolverBackend = .openfoam
     public var time: TimeMode = .steady
     public var gravityEnabled = false
     public var gravity: [Double] = [0, -9.81, 0]
@@ -108,7 +110,16 @@ public struct Material: Codable, Sendable, Equatable, Identifiable {
     public var thermalConductivity = 0.0242
     public var thermalExpansion = 3.4e-3
     public var molecularWeight = 28.966
+    /// Orthotropic solid conductivity (kx, ky, kz) along the global axes, e.g. a circuit
+    /// board's in-plane and through-plane values; nil = isotropic `thermalConductivity`.
+    public var anisotropicConductivity: [Double]? = nil
     public init(name: String) { self.name = name }
+
+    /// Conductivity along unit direction n (equals `thermalConductivity` when isotropic).
+    @inline(__always) public func conductivity(along n: Vec3) -> Double {
+        guard let k = anisotropicConductivity, k.count == 3 else { return thermalConductivity }
+        return k[0] * n.x * n.x + k[1] * n.y * n.y + k[2] * n.z * n.z
+    }
 
     public var gasConstant: Double { 8314.462618 / molecularWeight }
 }
@@ -124,6 +135,30 @@ public struct PorousSettings: Codable, Sendable, Equatable {
     public init() {}
 }
 
+/// Actuator disk (wind/tidal turbine rotor as a momentum sink): thrust T = ½ ρ A Ct U², power
+/// P = ½ ρ A Cp U³ with U the free-stream speed at `upstreamPoint` (OpenFOAM: actuationDiskSource,
+/// Froude variant). Curlew's own solver applies the thrust for `referenceVelocity` uniformly
+/// over the zone.
+public struct ActuatorDisk: Codable, Sendable, Equatable {
+    public var direction: [Double] = [1, 0, 0]
+    public var thrustCoefficient = 0.75
+    public var powerCoefficient = 0.45
+    public var diskArea = 1.0
+    public var upstreamPoint: [Double] = [0, 0, 0]
+    public var referenceVelocity = 1.0
+    public init() {}
+    private enum K: String, CodingKey { case direction, thrustCoefficient, powerCoefficient, diskArea, upstreamPoint, referenceVelocity }
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        direction = try c.decodeIfPresent([Double].self, forKey: .direction) ?? [1, 0, 0]
+        thrustCoefficient = try c.decodeIfPresent(Double.self, forKey: .thrustCoefficient) ?? 0.75
+        powerCoefficient = try c.decodeIfPresent(Double.self, forKey: .powerCoefficient) ?? 0.45
+        diskArea = try c.decodeIfPresent(Double.self, forKey: .diskArea) ?? 1
+        upstreamPoint = try c.decodeIfPresent([Double].self, forKey: .upstreamPoint) ?? [0, 0, 0]
+        referenceVelocity = try c.decodeIfPresent(Double.self, forKey: .referenceVelocity) ?? 1
+    }
+}
+
 public struct CellZoneSettings: Codable, Sendable, Equatable {
     public var kind: CellZoneKind = .fluid
     public var material: String = "air"
@@ -136,10 +171,51 @@ public struct CellZoneSettings: Codable, Sendable, Equatable {
     public var rotationAxisOrigin: [Double] = [0, 0, 0]
     public var rotationAxisDirection: [Double] = [0, 0, 1]
     public var rotationSpeed = 0.0
+    /// Turbine rotor modelled as an actuator disk (nil = none).
+    public var actuatorDisk: ActuatorDisk? = nil
     public init() {}
 }
 
 // MARK: - Boundary conditions
+
+/// Neutral atmospheric boundary layer inlet (Richards & Hoxey): log-law velocity
+/// U(z) = u*/κ ln((z − d + z0)/z0), k = u*²/√Cμ, ε = u*³/(κ (z − d + z0)), with u* from the
+/// reference speed at the reference height.
+public struct ABLProfile: Codable, Sendable, Equatable {
+    public var referenceVelocity = 10.0
+    public var referenceHeight = 20.0
+    public var roughnessLength = 0.1
+    /// Displacement height (ground level) d.
+    public var displacement = 0.0
+    public var flowDirection: [Double] = [1, 0, 0]
+    public var verticalDirection: [Double] = [0, 0, 1]
+    public init() {}
+    private enum K: String, CodingKey { case referenceVelocity, referenceHeight, roughnessLength, displacement, flowDirection, verticalDirection }
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        referenceVelocity = try c.decodeIfPresent(Double.self, forKey: .referenceVelocity) ?? 10
+        referenceHeight = try c.decodeIfPresent(Double.self, forKey: .referenceHeight) ?? 20
+        roughnessLength = try c.decodeIfPresent(Double.self, forKey: .roughnessLength) ?? 0.1
+        displacement = try c.decodeIfPresent(Double.self, forKey: .displacement) ?? 0
+        flowDirection = try c.decodeIfPresent([Double].self, forKey: .flowDirection) ?? [1, 0, 0]
+        verticalDirection = try c.decodeIfPresent([Double].self, forKey: .verticalDirection) ?? [0, 0, 1]
+    }
+
+    public static let kappa = 0.41, cmu = 0.09
+    public var frictionVelocity: Double { ABLProfile.kappa * referenceVelocity / log((referenceHeight + roughnessLength) / roughnessLength) }
+    /// Height above the displacement plane of a point.
+    public func height(_ p: Vec3) -> Double {
+        let zd = normalized(Vec3(verticalDirection[0], verticalDirection[1], verticalDirection[2]))
+        return max(dot(p, zd) - displacement, 0)
+    }
+    public func velocity(_ p: Vec3) -> Vec3 {
+        let us = frictionVelocity, z = height(p)
+        let d = normalized(Vec3(flowDirection[0], flowDirection[1], flowDirection[2]))
+        return d * (us / ABLProfile.kappa * log((z + roughnessLength) / roughnessLength))
+    }
+    public func k(_ p: Vec3) -> Double { let us = frictionVelocity; return us * us / sqrt(ABLProfile.cmu) }
+    public func epsilon(_ p: Vec3) -> Double { let us = frictionVelocity; return us * us * us / (ABLProfile.kappa * (height(p) + roughnessLength)) }
+}
 
 public enum VelocitySpecification: String, Codable, CaseIterable, Sendable {
     case magnitudeNormal = "magnitude-normal"
@@ -202,8 +278,27 @@ public struct BoundarySettings: Codable, Sendable, Equatable {
     public var flowDirection: [Double] = [1, 0, 0]
     // Passive scalar values at inlets (by scalar name)
     public var scalars: [String: Double] = [:]
+    /// Velocity inlet with a neutral atmospheric boundary-layer profile (nil = uniform).
+    public var atmosphericBoundaryLayer: ABLProfile? = nil
+    /// Wall: aerodynamic roughness length z0 [m] (0 = smooth). OpenFOAM: atmNutkWallFunction.
+    public var roughnessLength = 0.0
+    /// Periodic with another patch (OpenFOAM cyclicAMI); nil = not periodic.
+    public var periodic: PeriodicLink? = nil
 
     public init(type: ZoneKind) { self.type = type }
+}
+
+/// A periodic pair: this patch maps onto `partner` by a translation or a rotation.
+public struct PeriodicLink: Codable, Sendable, Equatable {
+    public var partner = ""
+    public var rotational = false
+    /// Rotation axis, centre and angle [°] taking this patch onto the partner.
+    public var axis: [Double] = [0, 0, 1]
+    public var centre: [Double] = [0, 0, 0]
+    public var angle = 0.0
+    /// Translation from this patch to the partner; nil = from the patch centroids.
+    public var separation: [Double]? = nil
+    public init(partner: String = "") { self.partner = partner }
 }
 
 // MARK: - Methods & controls
@@ -462,6 +557,8 @@ public struct CaseSetup: Codable, Sendable, Equatable {
     public var initialization = InitializationSettings()
     public var run = RunSettings()
     public var expressions: [NamedExpression] = []
+    /// OpenFOAM backend settings (used when `general.backend == .openfoam`).
+    public var openfoam = FoamSettings()
     public init() {}
 
     /// Fill in missing zone settings from the mesh (default kinds, air/fluid).
@@ -482,6 +579,13 @@ public struct CaseSetup: Codable, Sendable, Equatable {
     }
 
     public func material(named n: String) -> Material? { materials.first { $0.name == n } }
+
+    /// Add library materials that cell zones refer to but the case does not define yet.
+    public mutating func includeReferencedLibraryMaterials() {
+        for name in Set(cellZones.values.map(\.material)) where material(named: name) == nil {
+            if let m = MaterialLibrary.lookup(name) { materials.append(m) }
+        }
+    }
 
     // MARK: Lenient JSON
 
@@ -537,6 +641,16 @@ public struct CaseSetup: Codable, Sendable, Equatable {
             var i2 = ini
             i2["patches"] = patches.map { deepMerge(t, $0) }
             merged["initialization"] = i2
+        }
+        if let of = user["openfoam"] as? [String: Any] {
+            var o2 = of
+            if let po = of["patchOverrides"] as? [[String: Any]] {
+                o2["patchOverrides"] = po.map { deepMerge(["patch": "", "field": "U", "text": ""], $0) }
+            }
+            if let cs = of["customStages"] as? [[String: Any]] {
+                o2["customStages"] = cs.map { deepMerge(["phase": "afterSolve", "command": "", "parallel": false], $0) }
+            }
+            merged["openfoam"] = o2
         }
         if let ms = (user["models"] as? [String: Any])?["passiveScalars"] as? [[String: Any]] {
             let t = try JSONSerialization.jsonObject(with: enc.encode(PassiveScalar(name: "scalar"))) as! [String: Any]

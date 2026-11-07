@@ -3,6 +3,7 @@ import CurlewMesh
 import CurlewSolver
 import CurlewLinear
 import CurlewPost
+import CurlewFoam
 
 setvbuf(stdout, nil, _IOLBF, 0)
 let args = Array(CommandLine.arguments.dropFirst())
@@ -22,7 +23,8 @@ guard let cmd = args.first else {
       tutorial <id> [--iterations N] [--vtu out.vtu] [--export-foam dir]
       validate <cavity|natural-convection|flat-plate|pipe|cylinder|schafer-turek|sod|ramp> [options]
       mesh-info <mesh file>
-      mesh-cad <file.step> [--internal] [--axis 0|1|2] [--max-size h] [--wall-size h] [--solve]
+      mesh-cad <file.step|stl|obj|ply|off|3mf> [--internal] [--axis 0|1|2] [--unit mm] [--max-size h] [--wall-size h] [--solve]
+      foam detect | foam run <case> | foam mesh <cad file>   OpenFOAM backend and snappyHexMesh (see: foam)
       mesh-pipe [--length L] [--diameter D] [--max-size h] [--wall-size h]
                 3D meshes take prism layers: --bl-first h --bl-growth g --bl-layers n [--foam dir]
       export <case.curlew> [--foam dir] [--fluent-mesh out.msh]
@@ -32,6 +34,39 @@ guard let cmd = args.first else {
     Tutorials: \(TutorialCatalog.all.map(\.id).joined(separator: ", "))
     """)
     exit(0)
+}
+
+/// Write an OpenFOAM case for a Curlew setup (steady runs get `iterations` iterations).
+func exportFoam(_ mesh: Mesh, _ setup: CaseSetup, _ dir: String, iterations: Int?) throws {
+    var s = setup
+    if let it = iterations { s.run.iterations = it }
+    let r = try FoamCaseWriter.write(mesh: mesh, setup: s, to: URL(fileURLWithPath: dir))
+    for w in r.warnings { print("warning: \(w)") }
+    print("OpenFOAM application: \(r.application.rawValue), turbulence: \(r.turbulence.rawValue)")
+}
+
+/// OpenFOAM is the default solver wherever an installation exists (`--backend curlew` for the built-in one).
+var defaultBackend: String { FoamDiscovery.discover().isEmpty ? "curlew" : "openfoam" }
+
+/// `validate … --backend openfoam [--cores n]`: solve the benchmark with OpenFOAM and return a
+/// Curlew solver holding the loaded fields, so the same comparison code checks both codes.
+func validationWithOpenFOAM(_ mesh: Mesh, _ setup: CaseSetup, iterations: Int) throws -> PressureBasedSolver? {
+    guard option("--backend", defaultBackend) == "openfoam" else { return nil }
+    var s = setup
+    s.general.backend = .openfoam
+    s.run.iterations = iterations
+    s.openfoam.cores = Int(option("--cores", "1")) ?? 1
+    let d = option("--dir", ""); if !d.isEmpty { s.openfoam.caseDirectory = d }
+    if let t = FoamTurbulenceModel(rawValue: option("--turbulence", "")) { s.openfoam.turbulence = t }
+    // initial fields from Curlew's own initialization (patches included), as in the app
+    let starter = try PressureBasedSolver(mesh: mesh, setup: s)
+    starter.log = { _ in }
+    try starter.initialize()
+    let out = try FoamSolve(mesh: mesh, setup: s).run(initial: starter.state, log: { print($0) }, progress: { _, _, _, _ in })
+    if let f = out.failure { fail(f) }
+    guard let solver = out.solver else { fail("OpenFOAM results could not be loaded") }
+    print(String(format: "OpenFOAM: %d iterations in %.1f s", solver.iteration, out.seconds))
+    return solver
 }
 
 func option(_ name: String, _ def: String) -> String {
@@ -75,7 +110,7 @@ func describeGenerated(_ r: GmshDriver.Result, seconds: Double) throws {
     let foam = option("--foam", "")
     if !foam.isEmpty {
         var s = CaseSetup(); s.adopt(mesh: r.mesh)
-        try FoamCaseExporter.export(mesh: r.mesh, setup: s, to: URL(fileURLWithPath: foam)); print("Wrote OpenFOAM case \(foam)")
+        try exportFoam(r.mesh, s, foam, iterations: 2000); print("Wrote OpenFOAM case \(foam)")
     }
     let fl = option("--fluent-mesh", "")
     if !fl.isEmpty { try MeshWriters.fluentMesh(r.mesh).write(toFile: fl, atomically: true, encoding: .utf8); print("Wrote \(fl)") }
@@ -91,7 +126,9 @@ case "validate":
         var (mesh, setup) = try Benchmarks.cavityCase(re: re, cells: cells)
         if let t = Double(option("--p-tol", "")) { setup.controls.linear.pressure.relTol = t }
         print("Mesh: \(mesh.summary)")
-        let solver = try PressureBasedSolver(mesh: mesh, setup: setup)
+        let solver: PressureBasedSolver
+        if let fs = try validationWithOpenFOAM(mesh, setup, iterations: Int(option("--iterations", "4000"))!) { solver = fs } else {
+        solver = try PressureBasedSolver(mesh: mesh, setup: setup)
         solver.log = { _ in }
         try solver.initialize()
         let t0 = Date()
@@ -100,6 +137,7 @@ case "validate":
         }
         let dt = Date().timeIntervalSince(t0)
         print("iterations \(r.iterations) converged \(r.converged) in \(String(format: "%.2f", dt)) s")
+        }
         for c in Benchmarks.compareCavity(solver, re: re) {
             print("\(c.quantity): max |err| = \(String(format: "%.4f", c.maxAbsError)), rms = \(String(format: "%.4f", c.rmsError))")
             for i in 0..<c.positions.count {
@@ -111,7 +149,9 @@ case "validate":
         let cells = Int(option("--cells", "64"))!
         let (mesh, setup, alpha) = try Benchmarks.naturalConvectionCase(log10Ra: lr, cells: cells)
         print("Mesh: \(mesh.summary)")
-        let solver = try PressureBasedSolver(mesh: mesh, setup: setup)
+        let solver: PressureBasedSolver
+        if let fs = try validationWithOpenFOAM(mesh, setup, iterations: Int(option("--iterations", "6000"))!) { solver = fs } else {
+        solver = try PressureBasedSolver(mesh: mesh, setup: setup)
         solver.log = { _ in }
         try solver.initialize()
         let t0 = Date()
@@ -119,6 +159,7 @@ case "validate":
             if s.iteration % 200 == 0 { print(s.formatResiduals(res)) }
         }
         print("iterations \(r.iterations) converged \(r.converged) in \(String(format: "%.2f", Date().timeIntervalSince(t0))) s")
+        }
         let (nu, um, yu, vm, xv) = Benchmarks.measureNaturalConvection(solver, alpha: alpha)
         let ref = Benchmarks.deVahlDavis[lr]!
         print(String(format: "Nu      curlew %.4f   de Vahl Davis %.3f   (%.2f%%)", nu, ref.nusselt, 100 * (nu - ref.nusselt) / ref.nusselt))
@@ -131,15 +172,15 @@ case "validate":
         if let sch = ConvectionScheme(rawValue: option("--mom-scheme", "")) { setup.methods.momentum = sch }
         let exportDir = option("--export-foam", "")
         if !exportDir.isEmpty {
-            var o = FoamCaseExporter.Options()
-            o.iterations = Int(option("--iterations", "5000"))!
-            try FoamCaseExporter.export(mesh: mesh, setup: setup, to: URL(fileURLWithPath: exportDir), options: o)
+            try exportFoam(mesh, setup, exportDir, iterations: Int(option("--iterations", "5000"))!)
             print("OpenFOAM case written to \(exportDir)")
             exit(0)
         }
         print("Mesh: \(mesh.summary)")
         print(MeshQuality.report(mesh).text)
-        let solver = try PressureBasedSolver(mesh: mesh, setup: setup)
+        let solver: PressureBasedSolver
+        if let fs = try validationWithOpenFOAM(mesh, setup, iterations: Int(option("--iterations", "5000"))!) { solver = fs } else {
+        solver = try PressureBasedSolver(mesh: mesh, setup: setup)
         solver.log = { _ in }
         try solver.initialize()
         let t0 = Date()
@@ -156,6 +197,7 @@ case "validate":
             if s.iteration % Int(option("--every", "200"))! == 0 { print(s.formatResiduals(res)) }
         }
         print("iterations \(r.iterations) converged \(r.converged) diverged \(r.diverged) in \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
+        }
         for xs in [0.5, 0.97, 1.5] {
             let (cf, _) = Benchmarks.flatPlateSkinFriction(solver, x: xs)
             var line = String(format: "x=%.2f  Cf curlew %.6f", xs, cf)
@@ -189,8 +231,7 @@ case "validate":
         print(MeshQuality.report(pc.mesh).text)
         let exportDir = option("--export-foam", "")
         if !exportDir.isEmpty {
-            var o = FoamCaseExporter.Options(); o.iterations = Int(option("--iterations", "2000"))!
-            try FoamCaseExporter.export(mesh: pc.mesh, setup: setup, to: URL(fileURLWithPath: exportDir), options: o)
+            try exportFoam(pc.mesh, setup, exportDir, iterations: Int(option("--iterations", "2000"))!)
             print("OpenFOAM case written to \(exportDir)")
         }
         let solver = try PressureBasedSolver(mesh: pc.mesh, setup: setup)
@@ -266,6 +307,11 @@ case "validate":
         print(String(format: "Cd %.4f (ref 5.57-5.59)  Cl %.5f (ref 0.0104-0.0110)  dp %.5f (ref 0.1172-0.1176)", cd, cl, pp[0] - pp[1]))
     case "sod":
         let (mesh, setup, endT) = try Benchmarks.sodCase(cells: Int(option("--cells", "400"))!)
+        if let fs = try validationWithOpenFOAM(mesh, setup, iterations: 1) {
+            let (l1, _) = Benchmarks.sodError(fs, endTime: endT)
+            print(String(format: "Sod (rhoCentralFoam): %d cells, t = %.4e s; L1(rho error) = %.4f", mesh.nCells, fs.state.time, l1))
+            exit(0)
+        }
         let solver = try PressureBasedSolver(mesh: mesh, setup: setup)
         solver.log = { _ in }
         try solver.initialize()
@@ -277,12 +323,15 @@ case "validate":
         for (i, p) in prof.enumerated() where i % max(1, prof.count / 20) == 0 { print(String(format: "  x %.3f  rho %.4f  exact %.4f", p.0, p.1, p.2)) }
     case "ramp":
         let (mesh, setup) = try Benchmarks.rampCase(nx: Int(option("--nx", "150"))!, ny: Int(option("--ny", "100"))!)
-        let solver = try PressureBasedSolver(mesh: mesh, setup: setup)
+        let solver: PressureBasedSolver
+        if let fs = try validationWithOpenFOAM(mesh, setup, iterations: Int(option("--iterations", "4000"))!) { solver = fs } else {
+        solver = try PressureBasedSolver(mesh: mesh, setup: setup)
         solver.log = { _ in }
         try solver.initialize()
         let t0 = Date()
         let r = solver.run(iterations: Int(option("--iterations", "4000"))) { s, res in if s.iteration % 500 == 0 { print(s.formatResiduals(res)) } }
         print("iterations \(r.iterations) converged \(r.converged) diverged \(r.diverged) in \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
+        }
         let beta = Benchmarks.obliqueShockAngle(mach: 2.5, deflection: 15 * .pi / 180)
         let mn = 2.5 * sin(beta)
         let p21 = 1 + 2 * 1.4 / 2.4 * (mn * mn - 1)
@@ -319,13 +368,17 @@ case "tutorial":
     if let sch = ConvectionScheme(rawValue: option("--mom-scheme", "")) { setup.methods.momentum = sch }
     if let tf = TransientFormulation(rawValue: option("--time-scheme", "")) { setup.methods.transient = tf }
     if args.contains("--no-limit") { setup.methods.limitMomentum = false }
+    if args.contains("--no-energy") { setup.models.energy = false }
+    if args.contains("--hybrid") { setup.initialization.method = .hybrid }
+    if args.contains("--no-mrf") { for k in setup.cellZones.keys { setup.cellZones[k]!.frameMotion = false } }
+    if args.contains("--stationary-walls") { for k in setup.boundaries.keys where setup.boundaries[k]!.type == .wall { setup.boundaries[k]!.wallMotion = .stationary } }
     if let pi = PressureInterpolation(rawValue: option("--pressure", "")) { setup.methods.pressure = pi }
     if let nu = Double(option("--mu", "")) { for i in setup.materials.indices where setup.materials[i].kind == .fluid { setup.materials[i].viscosity = nu } }
     if let g = GradientScheme(rawValue: option("--gradient", "")) { setup.methods.gradient = g }
     if let sch = ConvectionScheme(rawValue: option("--energy-scheme", "")) { setup.methods.energy = sch }
+    if let tol = Double(option("--energy-tol", "")) { setup.residuals.energy = tol; setup.residuals.continuity = min(setup.residuals.continuity, tol * 100); setup.residuals.velocity = min(setup.residuals.velocity, tol * 100) }
     if let dir = args.firstIndex(of: "--export-foam").map({ args[$0 + 1] }) {
-        var o = FoamCaseExporter.Options(); o.iterations = setup.run.iterations
-        try FoamCaseExporter.export(mesh: mesh, setup: setup, to: URL(fileURLWithPath: dir), options: o)
+        try exportFoam(mesh, setup, dir, iterations: setup.run.iterations)
         print("OpenFOAM case written to \(dir)"); exit(0)
     }
     if args.contains("--mesh-info") {
@@ -362,6 +415,11 @@ case "tutorial":
     }
     print("iterations \(r.iterations) converged \(r.converged) diverged \(r.diverged) in \(String(format: "%.1f", Date().timeIntervalSince(t1))) s")
     for rep in solver.setup.reports { print(String(format: "  %@ = %.6g", rep.name, Reports.evaluate(rep, solver: solver))) }
+    for z in mesh.boundaryZones where z.kind != .empty && z.kind != .wall {
+        var r = ReportDefinition(name: z.name, kind: .areaWeightedAverage); r.zones = [z.name]
+        var mf = ReportDefinition(name: z.name, kind: .massFlowRate); mf.zones = [z.name]
+        print(String(format: "  %@: mean pressure %.6g Pa, mass flow %.6g kg/s", z.name as NSString, Reports.evaluate(r, solver: solver), Reports.evaluate(mf, solver: solver)))
+    }
     if args.contains("--reattachment"), let z = mesh.zone(named: "y-min") {
         // reattachment: first downstream wall face (x > 0, y = 0) where wall shear x changes sign to positive
         var faces = Array(z.faceRange).filter { mesh.faceCentres[$0].y < 1e-9 && mesh.faceCentres[$0].x > 0 }
@@ -490,6 +548,8 @@ case "mesh-cad":
     ms.maxSize = Double(option("--max-size", "0.4"))!
     ms.wallSize = Double(option("--wall-size", "0.05"))!
     ms.growthDistance = Double(option("--growth", "1.5"))!
+    ms.cadUnit = CADUnit(rawValue: option("--unit", "m")) ?? .metre
+    ms.cadConverter = option("--converter", "")
     applyBoundaryLayerOptions(&ms)
     let t0 = Date()
     let r = try GmshDriver.generate(ms)
@@ -515,8 +575,7 @@ case "mesh-cad":
         if args.contains("--plain-ls-pressure") { s.methods.conservativePressureGradient = false }
         let foamDir = option("--export-foam", "")
         if !foamDir.isEmpty {
-            var o = FoamCaseExporter.Options(); o.iterations = Int(option("--iterations", "1500"))!
-            try FoamCaseExporter.export(mesh: r.mesh, setup: s, to: URL(fileURLWithPath: foamDir), options: o)
+            try exportFoam(r.mesh, s, foamDir, iterations: Int(option("--iterations", "1500"))!)
             print("OpenFOAM case written to \(foamDir)")
         }
         let solver = try PressureBasedSolver(mesh: r.mesh, setup: s)
@@ -597,12 +656,175 @@ case "run":
     let vtu = option("--vtu", "")
     if !vtu.isEmpty { try VTKExport.write(solver: solver, to: URL(fileURLWithPath: vtu)); print("Wrote \(vtu)") }
     if r.diverged { exit(2) }
+case "cad-analysis":
+    // cad-analysis <file | sample:NAME> [--type external|internal|conjugate] [--axis 0] [--speed U] [--fluid air]
+    //   [--solid aluminum] [--heat W] [--unit mm] [--mesher gmsh|snappy] [--level coarse|medium|fine] [--no-layers]
+    //   [--run] [--backend openfoam] [--cores n] [--iterations N] [--save out.curlew]
+    guard args.count > 1 else { fail("cad-analysis <file | sample:\(CADSample.allCases.map(\.rawValue).joined(separator: "|"))> [options]") }
+    var spec: CADAnalysisSpec
+    if args[1].hasPrefix("sample:") {
+        guard let sm = CADSample(rawValue: String(args[1].dropFirst(7))) else { fail("samples: " + CADSample.allCases.map(\.rawValue).joined(separator: ", ")) }
+        spec = CADAnalysisSpec.sample(sm, path: try sm.export(to: CADSample.directory).path)
+    } else {
+        spec = CADAnalysisSpec(); spec.path = args[1]
+    }
+    switch option("--type", "") {
+    case "external": spec.kind = .externalAerodynamics
+    case "internal": spec.kind = .internalFlow
+    case "conjugate", "heatsink": spec.kind = .conjugateHeatSink
+    default: break
+    }
+    if let v = Int(option("--axis", "")) { spec.flowAxis = v }
+    if let v = Double(option("--speed", "")) { spec.speed = v }
+    if !option("--fluid", "").isEmpty { spec.fluid = option("--fluid", "") }
+    if !option("--solid", "").isEmpty { spec.solid = option("--solid", "") }
+    if let v = Double(option("--heat", "")) { spec.heatLoad = v }
+    if let u = CADUnit(rawValue: option("--unit", "")) { spec.unit = u; spec.unitFromFile = false }
+    // region of interest: --margins up,down,side,below,above (body lengths), --on-ground, --moving-ground,
+    // --refine x0,y0,z0:x1,y1,z1 (metres) [--refine-size h]
+    let mg = option("--margins", "").split(separator: ",").compactMap { Double($0) }
+    if mg.count == 5 { spec.domainMargins = mg }
+    if args.contains("--on-ground") { spec.onGround = true }
+    if args.contains("--moving-ground") { spec.onGround = true; spec.movingGround = true }
+    let rf = option("--refine", "").split(separator: ":").map { $0.split(separator: ",").compactMap { Double($0) } }
+    if rf.count == 2, rf[0].count == 3, rf[1].count == 3 { spec.refinementBox = rf[0] + rf[1] }
+    if let h = Double(option("--refine-size", "")) { spec.refinementSize = h }
+    if option("--mesher", "") == "snappy" { spec.mesher = .snappyHexMesh }
+    if let l = CADAnalysisSpec.Level(rawValue: option("--level", "")) { spec.level = l }
+    if args.contains("--no-layers") { spec.prismLayers = false }
+    spec.cores = Int(option("--cores", "1")) ?? 1
+    spec.converter = option("--converter", "")
+    let work = FoamLocations.defaultCaseDirectory(title: "cad-" + URL(fileURLWithPath: spec.path).deletingPathExtension().lastPathComponent)
+    let env = spec.mesher == .snappyHexMesh ? try FoamLocations.installation(for: CaseSetup()).resolve() : nil
+    let t0 = Date()
+    let built = try CADAnalysis.build(spec, workDir: work.appendingPathComponent("mesh"), environment: env, log: { print($0, terminator: "") })
+    print(built.summary + String(format: " (%.1f s)", Date().timeIntervalSince(t0)))
+    let mq = MeshQuality.report(built.mesh)
+    print(String(format: "  quality: max non-orthogonality %.1f°, min orthogonal quality %.3f, max skewness-free aspect %.3g", mq.maxNonOrthogonality, mq.minOrthogonalQuality, mq.maxAspectRatio))
+    for z in built.mesh.boundaryZones { print("  \(z.name) [\(built.setup.boundaries[z.name]?.type.rawValue ?? z.kind.rawValue)] \(z.count) faces") }
+    for z in built.mesh.cellZones { print("  cell zone \(z.name) [\(built.setup.cellZones[z.name]?.kind.rawValue ?? "")] \(z.cellCount) cells") }
+    var setup = built.setup
+    var mesh = built.mesh
+    if let n = Int(option("--iterations", "")) { setup.run.iterations = n }
+    // --wall a,b: retype detected openings as walls (e.g. close a manifold's far end)
+    for name in option("--wall", "").split(separator: ",").map(String.init) where !name.isEmpty {
+        guard let i = mesh.boundaryZones.firstIndex(where: { $0.name == name }) else { fail("no opening named \(name)") }
+        mesh.updateBoundaryZone(i, kind: .wall)
+        setup.boundaries[name] = BoundarySettings(type: .wall)
+        setup.reports.removeAll { $0.zones == [name] }
+        print("  \(name) is now a wall")
+    }
+    // --post-line x0,y0,z0:x1,y1,z1 (line sample) and --vtk: OpenFOAM post-processing after the run
+    let pl = option("--post-line", "").split(separator: ":").map { $0.split(separator: ",").compactMap { Double($0) } }
+    if pl.count == 2, pl[0].count == 3, pl[1].count == 3 {
+        var l = FoamLineSample(name: "line1"); l.start = pl[0]; l.end = pl[1]; l.points = 100; l.fields = "U p"
+        setup.openfoam.postProcessing.lineSamples = [l]
+        setup.openfoam.postProcessing.functions = ["wallShearStress", "yPlus", "vorticity"]
+    }
+    if args.contains("--vtk") { setup.openfoam.postProcessing.exportVTK = true }
+    if args.contains("--run") {
+        if option("--backend", defaultBackend) == "openfoam" {
+            setup.general.backend = .openfoam
+            setup.openfoam.caseDirectory = work.appendingPathComponent("run").path
+            let starter = try PressureBasedSolver(mesh: mesh, setup: setup); starter.log = { _ in }; try starter.initialize()
+            let out = try FoamSolve(mesh: mesh, setup: setup).run(initial: starter.state, log: { print($0) }, progress: { _, _, _, _ in })
+            if let f = out.failure { fail(f) }
+            if let sol = out.solver {
+                for r in setup.reports { print(String(format: "  %@ = %.6g", r.name, Reports.evaluate(r, solver: sol))) }
+                for smp in (try? FoamPostResults.lineSamples(in: out.caseDirectory)) ?? [] {
+                    print("  line sample \(smp.name): \(smp.rows.count) points, columns \(smp.columns.joined(separator: " ")) → \(out.caseDirectory.path)/postProcessing/\(smp.name)")
+                }
+                let save = option("--save", ""); if !save.isEmpty { try CasePackage.write(to: URL(fileURLWithPath: save), mesh: mesh, setup: sol.setup, solver: sol) }
+            }
+        } else {
+            let sol = try PressureBasedSolver(mesh: mesh, setup: setup); sol.log = { _ in }
+            try sol.initialize()
+            let r = sol.run { s, res in if s.iteration % 100 == 0 { print(s.formatResiduals(res)) } }
+            print("iterations \(r.iterations) converged \(r.converged)")
+            for rep in setup.reports { print(String(format: "  %@ = %.6g", rep.name, Reports.evaluate(rep, solver: sol))) }
+            let save = option("--save", ""); if !save.isEmpty { try CasePackage.write(to: URL(fileURLWithPath: save), mesh: mesh, setup: setup, solver: sol) }
+        }
+    } else {
+        let save = option("--save", ""); if !save.isEmpty { try CasePackage.write(to: URL(fileURLWithPath: save), mesh: mesh, setup: setup, solver: nil); print("Wrote \(save)") }
+    }
+case "pinn":
+    // pinn <tutorial id | case.curlew> [--mode physics|hybrid|data] [--epochs N] [--lbfgs N] [--layers n]
+    //   [--neurons n] [--python path] [--dir d] [--prepare-only] [--save out.curlew]
+    guard args.count > 1 else { fail("pinn <tutorial id | case.curlew> [options]") }
+    var mesh: Mesh, setup: CaseSetup, sol: PressureBasedSolver? = nil
+    if args[1].hasSuffix(".curlew") {
+        let pkg = try CasePackage.read(URL(fileURLWithPath: args[1]))
+        mesh = pkg.mesh; setup = pkg.setup
+        if pkg.hasData { let sv = try PressureBasedSolver(mesh: mesh, setup: setup); try CasePackage.restore(URL(fileURLWithPath: args[1]), into: sv); sol = sv }
+    } else if args[1].hasPrefix("cavity-re"), let re = Int(args[1].dropFirst(9)) {
+        // lid-driven cavity benchmark at any Reynolds number (Ghia et al. data at 100, 400, 1000)
+        (mesh, setup) = try Benchmarks.cavityCase(re: re, cells: Int(option("--cells", "64")) ?? 64)
+        setup.title = "cavity-re\(re)"
+    } else {
+        guard let t = TutorialCatalog.all.first(where: { $0.id == args[1] }) else { fail("tutorials: " + TutorialCatalog.all.map(\.id).joined(separator: ", ")) }
+        (mesh, setup) = try t.build()
+    }
+    var ps = PINNSettings()
+    if let v = Int(option("--interior", "")) { ps.interiorBatch = v }
+    if let v = Double(option("--lr", "")) { ps.learningRate = v }
+    if let d = PINNSettings.Device(rawValue: option("--device", "")) { ps.device = d }
+    if let v = Double(option("--w-bc", "")) { ps.weightBC = v }
+    if let m = PINNSettings.Mode(rawValue: option("--mode", "")) { ps.mode = m }
+    if let v = Int(option("--epochs", "")) { ps.adamEpochs = v }
+    if let v = Int(option("--lbfgs", "")) { ps.lbfgsIterations = v }
+    if let v = Int(option("--layers", "")) { ps.hiddenLayers = v }
+    if let v = Int(option("--neurons", "")) { ps.neurons = v }
+    if args.contains("--solve") && sol == nil {
+        // data for hybrid / surrogate modes: a converged CFD solution of the same case
+        let cfd = try PressureBasedSolver(mesh: mesh, setup: setup); cfd.log = { _ in }
+        try cfd.initialize()
+        let r = cfd.run { _, _ in }
+        print("CFD solution for the data points: \(r.iterations) iterations, converged \(r.converged)")
+        if args[1].hasPrefix("cavity-re"), let re = Int(args[1].dropFirst(9)), Benchmarks.ghiaU[re] != nil {
+            for c in Benchmarks.compareCavity(cfd, re: re) { print(String(format: "  CFD vs Ghia, %@: max |error| %.4f", c.quantity as NSString, c.maxAbsError)) }
+        }
+        sol = cfd
+    }
+    let dir = option("--dir", "").isEmpty ? PINNJob.defaultDirectory(for: setup) : URL(fileURLWithPath: option("--dir", ""))
+    let job = PINNJob(mesh: mesh, setup: setup, settings: ps)
+    let summary = try job.prepare(in: dir, solution: sol)
+    print(summary.text + " → \(dir.path)")
+    if args.contains("--prepare-only") { exit(0) }
+    let py = option("--python", "").isEmpty ? PINNJob.defaultPython : option("--python", "")
+    try job.run(python: py, in: dir, log: { print($0) }, progress: { _, _ in })
+    let s = try PINNJob.load(from: dir, mesh: mesh, setup: setup)
+    for r in setup.reports { print(String(format: "  %@ = %.6g", r.name, Reports.evaluate(r, solver: s))) }
+    if args[1].hasPrefix("cavity-re"), let re = Int(args[1].dropFirst(9)), Benchmarks.ghiaU[re] != nil {
+        for c in Benchmarks.compareCavity(s, re: re) {
+            print(String(format: "  Ghia et al. 1982, %@: max |error| %.4f, rms %.4f", c.quantity as NSString, c.maxAbsError, c.rmsError))
+        }
+    }
+    let save = option("--save", ""); if !save.isEmpty { try CasePackage.write(to: URL(fileURLWithPath: save), mesh: mesh, setup: setup, solver: s) }
+case "pinn-env":
+    // pinn-env [--install] [--dir d]: check (or create/repair) the PyTorch environment
+    let dir = option("--dir", "").isEmpty ? PINNJob.environmentDirectory : URL(fileURLWithPath: option("--dir", ""))
+    if args.contains("--install") {
+        let py = try PINNJob.createEnvironment(directory: dir, log: { print("  " + $0) })
+        print("Ready: \(py)")
+    } else {
+        let st = PINNJob.checkEnvironment(python: dir.appendingPathComponent("bin/python").path)
+        print((st.ok ? "OK: " : "Not ready: ") + st.text)
+    }
+case "samples":
+    // samples [--export dir]: build every CAD sample as STEP
+    let dir = option("--export", "").isEmpty ? CADSample.directory : URL(fileURLWithPath: option("--export", ""))
+    for sm in CADSample.allCases {
+        do { let u = try sm.export(to: dir); print("\(sm.rawValue): \(u.path) — \(sm.title)") }
+        catch { print("\(sm.rawValue): \(error)") }
+    }
+case "foam":
+    try foamCommand()
 case "export":
     // export <case.curlew> --foam dir | --fluent-mesh file.msh
     guard args.count > 1 else { fail("export <case.curlew> [--foam dir] [--fluent-mesh out.msh]") }
     let pkg = try CasePackage.read(URL(fileURLWithPath: args[1]))
     let foam = option("--foam", "")
-    if !foam.isEmpty { try FoamCaseExporter.export(mesh: pkg.mesh, setup: pkg.setup, to: URL(fileURLWithPath: foam)); print("Wrote OpenFOAM case \(foam)") }
+    if !foam.isEmpty { try exportFoam(pkg.mesh, pkg.setup, foam, iterations: nil); print("Wrote OpenFOAM case \(foam)") }
     let fl = option("--fluent-mesh", "")
     if !fl.isEmpty { try MeshWriters.fluentMesh(pkg.mesh).write(toFile: fl, atomically: true, encoding: .utf8); print("Wrote \(fl)") }
 case "mesh-info":
@@ -660,5 +882,130 @@ func import_bench() {
         for i in 0..<x.count { diff = max(diff, abs(x[i] - xg[i])); mx = max(mx, abs(x[i])) }
         print(String(format: "  rel tol %.0e  GPU  %@: %3d its  %.3f s  final %.2e  (speed-up %.2fx, max |x_gpu - x_cpu| / max|x| = %.1e)",
                      tol, gpu.name, sg.iterations, tGPU, sg.finalResidual / sg.initialResidual, tCPU / tGPU, diff / max(mx, 1e-300)))
+    }
+}
+
+// MARK: - OpenFOAM backend
+
+func foamCommand() throws {
+    guard args.count > 1 else {
+        fail("""
+        foam detect                                   list OpenFOAM installations and probe them
+        foam run <case.json --mesh f | case.curlew | --tutorial id> [options]
+             --dir d --cores n --app simpleFoam --turbulence kOmegaSST --iterations N
+             --installation path --continue --write-only --save out.curlew --vtu out.vtu
+        foam mesh <file.step|stl|obj|ply|off|3mf> [--internal] [--axis 0|1|2] [--unit mm]
+             [--cell h] [--levels 3,4] [--layers n] [--cores n] [--dir d] [--save out.curlew]
+        """)
+    }
+    switch args[1] {
+    case "detect":
+        let found = FoamDiscovery.discover()
+        if found.isEmpty { print("No OpenFOAM installation found."); exit(1) }
+        for inst in found {
+            print("\(inst.name)  [\(inst.kind.rawValue), \(inst.version ?? "?")]  \(inst.location.path)")
+            do { let env = try inst.resolve(); print("  " + env.probe().message) } catch { print("  \(error)") }
+        }
+    case "run":
+        var mesh: Mesh, setup: CaseSetup
+        var initial: FlowState? = nil
+        if let tid = args.firstIndex(of: "--tutorial").map({ args[$0 + 1] }) {
+            guard let t = TutorialCatalog.all.first(where: { $0.id == tid }) else { fail("unknown tutorial \(tid)") }
+            (mesh, setup) = try t.build()
+        } else {
+            guard args.count > 2 else { fail("foam run needs a case") }
+            let input = URL(fileURLWithPath: args[2])
+            if input.pathExtension == "curlew" {
+                let pkg = try CasePackage.read(input); mesh = pkg.mesh; setup = pkg.setup
+                if pkg.hasData {
+                    let s = try PressureBasedSolver(mesh: mesh, setup: setup); s.log = { _ in }
+                    try CasePackage.restore(input, into: s); initial = s.state
+                }
+            } else {
+                setup = try CaseSetup.decodeLenient(Data(contentsOf: input))
+                let mp = option("--mesh", "")
+                guard !mp.isEmpty else { fail("a JSON case needs --mesh <file>") }
+                mesh = try readMesh(mp)
+            }
+        }
+        setup.general.backend = .openfoam
+        if let n = Int(option("--iterations", "")) { setup.run.iterations = n; setup.run.numberOfTimeSteps = n }
+        if let n = Int(option("--cores", "")) { setup.openfoam.cores = n }
+        if let a = FoamApplication(rawValue: option("--app", "")) { setup.openfoam.application = a }
+        if let t = FoamTurbulenceModel(rawValue: option("--turbulence", "")) { setup.openfoam.turbulence = t }
+        let dir = option("--dir", ""); if !dir.isEmpty { setup.openfoam.caseDirectory = dir }
+        let inst = option("--installation", ""); if !inst.isEmpty { setup.openfoam.installation = inst }
+        if args.contains("--continue") { setup.openfoam.continueFromLatestTime = true }
+        if let f = FoamInitialFields(rawValue: option("--initial-fields", "")) { setup.openfoam.initialFields = f }
+        setup.adopt(mesh: mesh)
+        print("Curlew → OpenFOAM: \(setup.title) — \(mesh.summary)")
+        if initial == nil && setup.openfoam.initialFields == .curlew {
+            let s = try PressureBasedSolver(mesh: mesh, setup: setup); s.log = { _ in }
+            try s.initialize(); initial = s.state
+            print("Initial fields from Curlew \(setup.initialization.method.rawValue) initialization")
+        }
+        if args.contains("--write-only") {
+            let d = FoamLocations.caseDirectory(for: setup)
+            try FoamLocations.validate(d)
+            let r = try FoamCaseWriter.write(mesh: mesh, setup: setup, to: d, initial: initial)
+            for w in r.warnings { print("warning: \(w)") }
+            print("Wrote \(r.application.rawValue) case to \(d.path)"); return
+        }
+        let job = FoamSolve(mesh: mesh, setup: setup)
+        signal(SIGINT, SIG_IGN)
+        let src = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
+        src.setEventHandler { print("\nInterrupt — stopping OpenFOAM…"); job.cancel() }
+        src.resume()
+        let out = try job.run(initial: initial, log: { print($0) }, progress: { _, _, _, _ in })
+        print(String(format: "OpenFOAM run %@ in %.1f s", out.failure == nil ? "finished" : "stopped", out.seconds))
+        if let f = out.failure { print(f) }
+        if let s = out.solver {
+            for z in mesh.boundaryZones where z.kind != .empty && z.kind != .wall {
+                var r = ReportDefinition(name: z.name, kind: .areaWeightedAverage); r.zones = [z.name]
+                var mf = ReportDefinition(name: z.name, kind: .massFlowRate); mf.zones = [z.name]
+                print(String(format: "  %@: mean pressure %.6g Pa, mass flow %.6g kg/s", z.name as NSString, Reports.evaluate(r, solver: s), Reports.evaluate(mf, solver: s)))
+            }
+            for rep in s.setup.reports {
+                let live = out.reports.series(rep.name).last.map { String(format: "  (OpenFOAM function object %.8g)", $0.1) } ?? ""
+                print(String(format: "  %@ = %.8g", rep.name, Reports.evaluate(rep, solver: s)) + live)
+            }
+            let save = option("--save", "")
+            if !save.isEmpty { try CasePackage.write(to: URL(fileURLWithPath: save), mesh: mesh, setup: s.setup, solver: s); print("Wrote \(save)") }
+            let vtu = option("--vtu", "")
+            if !vtu.isEmpty { try VTKExport.write(solver: s, to: URL(fileURLWithPath: vtu)); print("Wrote \(vtu)") }
+        }
+        if out.failure != nil { exit(2) }
+    case "mesh":
+        guard args.count > 2 else { fail("foam mesh <cad file> [options]") }
+        var s = SnappySettings()
+        s.path = args[2]
+        s.external = !args.contains("--internal")
+        s.flowAxis = Int(option("--axis", "0")) ?? 0
+        s.unit = CADUnit(rawValue: option("--unit", "m")) ?? .metre
+        s.baseCellSize = Double(option("--cell", "0")) ?? 0
+        let lv = option("--levels", "").split(separator: ",").compactMap { Int($0) }
+        if lv.count == 2 { s.surfaceLevelMin = lv[0]; s.surfaceLevelMax = lv[1]; s.featureLevel = lv[1] }
+        s.layers = Int(option("--layers", "3")) ?? 3
+        s.cores = Int(option("--cores", "1")) ?? 1
+        s.converter = option("--converter", "")
+        var setup = CaseSetup()
+        let d = option("--dir", "")
+        let dir = d.isEmpty ? FoamLocations.defaultCaseDirectory(title: URL(fileURLWithPath: s.path).deletingPathExtension().lastPathComponent + "_mesh") : URL(fileURLWithPath: d)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        setup.openfoam.installation = option("--installation", "")
+        let env = try FoamLocations.installation(for: setup).resolve()
+        let t0 = Date()
+        let r = try SnappyMesher.mesh(s, workDir: dir, environment: env, log: { print($0, terminator: "") })
+        print(r.summary + String(format: " (%.1f s)", Date().timeIntervalSince(t0)))
+        print(r.mesh.summary)
+        for z in r.mesh.boundaryZones { print("  \(z.name) [\(z.kind.rawValue)] \(z.count) faces") }
+        print(MeshQuality.report(r.mesh).text)
+        let save = option("--save", "")
+        if !save.isEmpty {
+            setup.adopt(mesh: r.mesh)
+            try CasePackage.write(to: URL(fileURLWithPath: save), mesh: r.mesh, setup: setup, solver: nil); print("Wrote \(save)")
+        }
+    default:
+        fail("unknown foam subcommand \(args[1])")
     }
 }

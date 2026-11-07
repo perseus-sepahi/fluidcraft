@@ -40,6 +40,10 @@ public struct MeshBuilder {
     public var cellZoneOfCell: [Int32] = []
     /// Reverse Cuthill-McKee renumbering for matrix bandwidth / cache locality.
     public var renumber = true
+    /// Keep cells, faces and face orientation exactly as given (internal faces must already be
+    /// upper-triangular with owner < neighbour, as in OpenFOAM). Used when fields computed on
+    /// the source mesh are read back face by face.
+    public var preserveOrder = false
 
     public init() {}
 
@@ -83,7 +87,7 @@ public struct MeshBuilder {
 
         // Renumbering (RCM) on the cell adjacency graph.
         var newID = Array(0..<Int32(nCells))
-        if renumber && nCells > 2 {
+        if renumber && !preserveOrder && nCells > 2 {
             newID = MeshBuilder.reverseCuthillMcKee(nCells: nCells, faces: faces)
         }
 
@@ -93,6 +97,15 @@ public struct MeshBuilder {
         inner.reserveCapacity(faces.count)
         for (i, f) in faces.enumerated() {
             var nodes = f.nodes
+            if preserveOrder {
+                if f.c1 >= 0 {
+                    guard f.c0 < f.c1 else { throw MeshError.topology("face \(i): owner \(f.c0) is not below neighbour \(f.c1)") }
+                    inner.append(Oriented(nodes: nodes, own: f.c0, nei: f.c1, zone: -1))
+                } else {
+                    boundary.append(Oriented(nodes: nodes, own: f.c0, nei: -1, zone: f.zone))
+                }
+                continue
+            }
             let sf = MeshBuilder.areaVector(nodes, points)
             if f.c1 >= 0 {
                 // Orient from c0 to c1 geometrically, then make owner the lower new id.
@@ -107,10 +120,15 @@ public struct MeshBuilder {
                 boundary.append(Oriented(nodes: nodes, own: newID[Int(f.c0)], nei: -1, zone: f.zone))
             }
         }
-        inner.sort { $0.own != $1.own ? $0.own < $1.own : $0.nei < $1.nei }
-        // Detect duplicated internal faces (same owner/neighbour pair is legal for
-        // non-conformal polyhedra, but identical node sets are not).
-        boundary.sort { $0.zone != $1.zone ? $0.zone < $1.zone : $0.own < $1.own }
+        if preserveOrder {
+            // stable bucketing by zone keeps each patch's own face order
+            var buckets = [[Oriented]](repeating: [], count: zones.count + 1)
+            for f in boundary { buckets[f.zone >= 0 && Int(f.zone) < zones.count ? Int(f.zone) : zones.count].append(f) }
+            boundary = buckets.flatMap { $0 }
+        } else {
+            inner.sort { $0.own != $1.own ? $0.own < $1.own : $0.nei < $1.nei }
+            boundary.sort { $0.zone != $1.zone ? $0.zone < $1.zone : $0.own < $1.own }
+        }
 
         var offsets: [Int32] = [0]
         var nodes: [Int32] = []
@@ -210,5 +228,27 @@ public struct MeshBuilder {
         var newID = [Int32](repeating: 0, count: nCells)
         for (i, c) in order.reversed().enumerated() { newID[Int(c)] = Int32(i) }
         return newID
+    }
+}
+
+
+extension Mesh {
+    /// The same mesh with new cell zones: `assign` returns the zone index (into `zones`) of a
+    /// cell from its centre. Used for cylindrical rotor zones, actuator disks and other zones
+    /// that are not boxes.
+    public func rezoned(zones: [MeshBuilder.CellZoneSpec], assign: (Vec3) -> Int) throws -> Mesh {
+        var b = MeshBuilder()
+        b.points = points; b.nCells = nCells; b.renumber = false
+        let zi = boundaryZones.map { b.addZone($0.name, kind: $0.kind) }
+        var zoneOfFace = [Int32](repeating: -1, count: nFaces)
+        for (i, z) in boundaryZones.enumerated() { for f in z.faceRange { zoneOfFace[f] = zi[i] } }
+        for f in 0..<nFaces {
+            let nodes = faceNodeRange(f).map { faceNodes[$0] }
+            if f < nInternalFaces { b.addFace(nodes, c0: owner[f], c1: neighbour[f]) }
+            else { b.addFace(nodes, c0: owner[f], c1: -1, zone: zoneOfFace[f]) }
+        }
+        b.cellZones = zones
+        b.cellZoneOfCell = (0..<nCells).map { Int32(assign(cellCentres[$0])) }
+        return try b.build()
     }
 }

@@ -47,7 +47,11 @@ public enum MaterialLibrary {
         solid("glass", rho: 2500, cp: 840, k: 1.4),
         solid("concrete", rho: 2300, cp: 880, k: 1.4),
         solid("wood", rho: 700, cp: 2310, k: 0.173),
-        solid("fr4", rho: 1850, cp: 1100, k: 0.3),
+        { var m = solid("fr4", rho: 1850, cp: 1100, k: 0.3)
+          // glass-epoxy circuit board with copper planes: conducts along the board (x, y) far better than through it (z)
+          m.anisotropicConductivity = [8, 8, 0.4]; return m }(),
+        solid("chip-package", rho: 2300, cp: 700, k: 20),
+        solid("thermal-paste", rho: 2500, cp: 800, k: 5),
         solid("titanium", rho: 4850, cp: 544.25, k: 7.44),
     ]
 

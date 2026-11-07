@@ -139,7 +139,7 @@ public enum Gradient {
     /// Used for the pressure force: a non-conservative pressure source loses momentum where the
     /// pressure has cell-scale structure (prism/tetrahedron transitions).
     public static func conservative(_ g: FVGeometry, _ phi: [Double], boundary: [Double],
-                                    reconstruction rg: [Vec3], into grad: inout [Vec3]) {
+                                    reconstruction rg: [Vec3], into grad: inout [Vec3], interface: [Bool]? = nil) {
         let m = g.mesh
         if grad.count != g.nCells { grad = [Vec3](repeating: .zero, count: g.nCells) }
         let nI = g.nInternal
@@ -152,6 +152,8 @@ public enum Gradient {
                         let f = Int(m.cellFaces[k])
                         let S = m.faceAreas[f]
                         if f < nI {
+                            // fluid–solid interface: a wall with zero normal pressure gradient
+                            if let mask = interface, mask[f] { s += Int(m.owner[f]) == c ? phi[c] * S : -(phi[c] * S); continue }
                             let P = Int(m.owner[f]), N = Int(m.neighbour[f])
                             let w = g.weight[f]
                             let xi = w * m.cellCentres[P] + (1 - w) * m.cellCentres[N]
@@ -169,8 +171,9 @@ public enum Gradient {
 
     /// Least-squares (cell-based) or Green-Gauss (cell-based) gradient. `boundary`
     /// holds face values for every boundary face (index f - nInternal).
+    /// `interface` marks internal faces (fluid–solid) treated as zero-gradient walls.
     public static func compute(_ g: FVGeometry, _ phi: [Double], boundary: [Double],
-                               scheme: GradientScheme, into grad: inout [Vec3]) {
+                               scheme: GradientScheme, into grad: inout [Vec3], interface: [Bool]? = nil) {
         let m = g.mesh
         if grad.count != g.nCells { grad = [Vec3](repeating: .zero, count: g.nCells) }
         let nI = g.nInternal
@@ -201,6 +204,10 @@ public enum Gradient {
                     for k in Int(CFO[c])..<Int(CFO[c + 1]) {
                         let f = Int(CF[k])
                         let isOwner = Int(OWN[f]) == c
+                        if let mask = interface, f < nI, mask[f] {
+                            if scheme == .greenGauss { s += isOwner ? FA[f] * pc : -(FA[f] * pc) }
+                            continue
+                        }
                         switch scheme {
                         case .leastSquares:
                             if f < nI {

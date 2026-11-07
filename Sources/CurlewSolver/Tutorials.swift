@@ -12,7 +12,10 @@ public struct Tutorial: Sendable, Identifiable {
 }
 
 public enum TutorialCatalog {
-    public static let all: [Tutorial] = [
+    public static var all: [Tutorial] { core + engineering }
+
+    /// The textbook and benchmark cases (the engineering cases are modules in the app).
+    public static let core: [Tutorial] = [
         Tutorial(id: "cavity", title: "Lid-Driven Cavity (Re = 1000)",
                  summary: "Laminar 2D cavity, SIMPLEC, second-order upwind. Compare centreline velocities with Ghia et al. (1982).",
                  needsGmsh: false, suggestedField: "velocity-magnitude") {

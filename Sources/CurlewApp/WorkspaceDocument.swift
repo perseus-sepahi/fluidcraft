@@ -4,12 +4,15 @@ import UniformTypeIdentifiers
 import CurlewMesh
 import CurlewSolver
 import CurlewPost
+import CurlewFoam
 
 /// Workspace state saved alongside a case (surfaces, display settings).
 struct WorkspaceExtras: Codable {
     var namedSurfaces: [NamedSurface]
     var displayField: String
     var colormap: Colormap
+    var module: AppModule? = nil
+    var moduleParameters: ModuleParameters? = nil
 }
 
 extension Workspace {
@@ -72,7 +75,8 @@ extension Workspace {
         do {
             let withData = (initialized && !isRunning) ? solver : nil
             try CasePackage.write(to: dir, mesh: mesh, setup: setup, solver: withData)
-            let extras = WorkspaceExtras(namedSurfaces: namedSurfaces, displayField: display.field, colormap: display.colormap)
+            let extras = WorkspaceExtras(namedSurfaces: namedSurfaces, displayField: display.field, colormap: display.colormap,
+                                         module: activeModule, moduleParameters: moduleParams)
             try JSONEncoder().encode(extras).write(to: dir.appendingPathComponent("workspace.json"))
             documentURL = dir
             isDirty = false
@@ -98,8 +102,14 @@ extension Workspace {
             setup.adopt(mesh: m)
             if let e = try? JSONDecoder().decode(WorkspaceExtras.self, from: Data(contentsOf: dir.appendingPathComponent("workspace.json"))) {
                 namedSurfaces = e.namedSurfaces; display.field = e.displayField; display.colormap = e.colormap
+                if let m = e.module { activeModule = m }
+                if let p = e.moduleParameters { moduleParams = p }
             }
             documentURL = dir
+            foamUnapprovedContent = s.openfoam.activeContent
+            if !foamUnapprovedContent.isEmpty {
+                log("This case has \(foamUnapprovedContent.count) custom OpenFOAM item(s) (stages, function objects, dictionary text or files); you will be asked to approve them before OpenFOAM runs.", .warning)
+            }
             if pkg.hasData, let solver = ensureSolver() {
                 try CasePackage.restore(dir, into: solver)
                 residuals = solver.residuals; reportHistory = solver.reportHistory
@@ -149,15 +159,16 @@ extension Workspace {
 
     func exportFoamCase() {
         guard let m = mesh else { return }
+        guard approveFoamContent() else { return }
         let p = NSOpenPanel()
         p.canChooseDirectories = true; p.canChooseFiles = false; p.canCreateDirectories = true
         p.prompt = "Export Here"
         p.message = "Choose an empty folder for the OpenFOAM case"
         if p.runModal() == .OK, let u = p.url {
             do {
-                var o = FoamCaseExporter.Options(); o.iterations = setup.run.iterations
-                try FoamCaseExporter.export(mesh: m, setup: setup, to: u, options: o)
-                log("Wrote OpenFOAM case to \(u.path) (run \(setup.general.time == .transient ? "pimpleFoam" : "simpleFoam") there)")
+                let r = try FoamCaseWriter.write(mesh: m, setup: setup, to: u)
+                for w in r.warnings { log(w, .warning) }
+                log("Wrote OpenFOAM case to \(u.path) (\(r.application.rawValue); run ./Allrun there)")
             } catch { log("\(error)", .error) }
         }
     }

@@ -11,6 +11,12 @@ struct ByteParser {
         bytes = b
     }
 
+    init(bytes b: [UInt8]) {
+        var c = b
+        c.append(0)
+        bytes = c
+    }
+
     var atEnd: Bool { pos >= bytes.count - 1 }
 
     @inline(__always) static func isSpace(_ c: UInt8) -> Bool { c == 32 || c == 9 || c == 10 || c == 13 }

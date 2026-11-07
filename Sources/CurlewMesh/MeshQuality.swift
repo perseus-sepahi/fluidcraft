@@ -18,6 +18,9 @@ public struct MeshQualityReport: Sendable, Codable {
     /// Cells with orthogonal quality below 0.01 (Fluent warns at this level).
     public var poorCells: Int
     public var bounds: BoundingBox
+    /// Faces whose pyramid to an adjacent cell centre is inverted (OpenFOAM checkMesh "Error
+    /// in face pyramids"): twisted or folded cells that a total-volume check can miss.
+    public var invertedFacePyramids = 0
 
     public var text: String {
         var s = ""
@@ -29,6 +32,7 @@ public struct MeshQualityReport: Sendable, Codable {
         s += String(format: "Maximum aspect ratio: %.4g\n", maxAspectRatio)
         s += String(format: "Maximum non-orthogonality: %.2f deg\n", maxNonOrthogonality)
         if negativeVolumes > 0 { s += "ERROR: \(negativeVolumes) cells with non-positive volume\n" }
+        if invertedFacePyramids > 0 { s += "ERROR: \(invertedFacePyramids) faces with inverted pyramids (folded cells)\n" }
         return s
     }
 }
@@ -93,11 +97,21 @@ public enum MeshQuality {
             if q < 0.01 { poor += 1 }
             if dmin[c] > 0 && dmin[c].isFinite { maxAR = max(maxAR, dmax[c] / dmin[c]) }
         }
-        return MeshQualityReport(cells: m.nCells, faces: m.nFaces, nodes: m.nPoints,
-                                 minVolume: minV, maxVolume: maxV, totalVolume: m.totalVolume,
-                                 minOrthogonalQuality: minOQ, meanOrthogonalQuality: sumOQ / Double(max(m.nCells, 1)),
-                                 maxAspectRatio: maxAR, maxNonOrthogonality: maxNonOrth,
-                                 negativeVolumes: neg, poorCells: poor, bounds: m.bounds)
+        // face pyramids: the face seen from each adjacent cell centre must point away from it
+        var inverted = 0
+        for f in 0..<m.nFaces {
+            let S = m.faceAreas[f], fc = m.faceCentres[f]
+            var bad = dot(S, fc - m.cellCentres[Int(m.owner[f])]) <= 0
+            if f < m.nInternalFaces && dot(S, m.cellCentres[Int(m.neighbour[f])] - fc) <= 0 { bad = true }
+            if bad { inverted += 1 }
+        }
+        var r = MeshQualityReport(cells: m.nCells, faces: m.nFaces, nodes: m.nPoints,
+                                  minVolume: minV, maxVolume: maxV, totalVolume: m.totalVolume,
+                                  minOrthogonalQuality: minOQ, meanOrthogonalQuality: sumOQ / Double(max(m.nCells, 1)),
+                                  maxAspectRatio: maxAR, maxNonOrthogonality: maxNonOrth,
+                                  negativeVolumes: neg, poorCells: poor, bounds: m.bounds)
+        r.invertedFacePyramids = inverted
+        return r
     }
 
     /// Per-cell orthogonal quality, for contouring.

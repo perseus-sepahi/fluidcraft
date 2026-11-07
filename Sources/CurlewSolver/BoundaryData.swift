@@ -48,7 +48,7 @@ public final class BoundaryData: @unchecked Sendable {
     public var zoneArea: [Double]
     public let hasPressureBoundary: Bool
 
-    init(mesh: Mesh, setup: CaseSetup, exprs: [String: Expr], time: Double) throws {
+    public init(mesh: Mesh, setup: CaseSetup, exprs: [String: Expr], time: Double) throws {
         nInternal = mesh.nInternalFaces
         nB = mesh.nBoundaryFaces
         kind = [BCKind](repeating: .wall, count: nB)
@@ -153,6 +153,8 @@ public final class BoundaryData: @unchecked Sendable {
                     if s.type == .massFlowInlet {
                         let un = massFlow / max(rhoP * zoneArea[zi], 1e-300)
                         uSpec[bf] = -un * nHat
+                    } else if let abl = s.atmosphericBoundaryLayer {
+                        uSpec[bf] = abl.velocity(c)
                     } else if s.velocitySpecification == .magnitudeNormal {
                         uSpec[bf] = -fVelMag(c) * nHat
                     } else {
@@ -203,7 +205,13 @@ public final class BoundaryData: @unchecked Sendable {
 
                 // Turbulence
                 let speed = max(norm(uSpec[bf]), kind[bf] == .velocityInlet ? 0 : s.velocityMagnitude.constantValue ?? 1)
-                let tv = turbulence(speed: speed, rho: rhoP, mu: muP)
+                var tv = turbulence(speed: speed, rho: rhoP, mu: muP)
+                if let abl = s.atmosphericBoundaryLayer, kind[bf] == .velocityInlet {
+                    // Richards & Hoxey equilibrium profiles
+                    let kk = abl.k(c), ee = abl.epsilon(c)
+                    let nut = ABLProfile.kappa * abl.frictionVelocity * (abl.height(c) + abl.roughnessLength)
+                    tv = (kk, ee / (ABLProfile.cmu * kk), ee, SA.nuTildeFor(nuT: nut, nu: muP / rhoP))
+                }
                 switch kind[bf] {
                 case .empty:
                     k.kind[bf] = .none; omega.kind[bf] = .none; epsilon.kind[bf] = .none; nuTilda.kind[bf] = .none

@@ -10,6 +10,14 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
+        VStack(spacing: 0) {
+            ModuleRibbon(ws: ws)
+            Divider()
+            splitView
+        }
+    }
+
+    var splitView: some View {
         NavigationSplitView {
             OutlineSidebar(ws: ws)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 300)
@@ -34,14 +42,6 @@ struct ContentView: View {
 
     @ToolbarContentBuilder
     var toolbar: some ToolbarContent {
-        ToolbarItemGroup(placement: .navigation) {
-            Menu {
-                ForEach(TutorialCatalog.all) { t in
-                    Button(t.title) { ws.loadTutorial(t) }.disabled(t.needsGmsh && !GmshDriver.isAvailable)
-                }
-            } label: { Label("Tutorials", systemImage: "book") }
-            .help("Load a ready-to-run case")
-        }
         ToolbarItemGroup(placement: .primaryAction) {
             Button { ws.selection = .meshGeneration } label: { Label("Mesh", systemImage: "square.grid.3x3.square") }.help("Mesh generation")
             Button { ws.selection = .meshInfo } label: { Label("Check", systemImage: "checkmark.seal") }.help("Mesh check and quality").disabled(ws.mesh == nil)
@@ -68,9 +68,10 @@ struct OutlineSidebar: View {
     @Bindable var ws: Workspace
     var body: some View {
         List(selection: $ws.selection) {
+            Section("Module") { rows([.module]) }
             Section("Meshing") { rows([.meshGeneration, .meshInfo]) }
             Section("Setup") { rows([.general, .models, .materials, .cellZones, .boundaries, .expressions, .referenceValues]) }
-            Section("Solution") { rows([.methods, .controls, .reportDefinitions, .monitors, .initialization, .runCalculation]) }
+            Section("Solution") { rows([.methods, .controls, .reportDefinitions, .monitors, .initialization, .openfoam, .runCalculation]) }
             Section("Results") { rows([.surfaces, .graphicsMesh, .contours, .vectors, .pathlines, .xyPlot, .reports]) }
             Section("Verification") { rows([.validation]) }
         }
@@ -98,7 +99,9 @@ struct TaskPanel: View {
     }
     @ViewBuilder func page(_ s: OutlineItem) -> some View {
         switch s {
+        case .module: ModulePage(ws: ws)
         case .meshGeneration: MeshGenerationPage(ws: ws)
+        case .cadAnalysis: CADAnalysisPage(ws: ws)
         case .meshInfo: MeshInfoPage(ws: ws)
         case .general: GeneralPage(ws: ws)
         case .models: ModelsPage(ws: ws)
@@ -112,6 +115,7 @@ struct TaskPanel: View {
         case .reportDefinitions: ReportDefinitionsPage(ws: ws)
         case .monitors: MonitorsPage(ws: ws)
         case .initialization: InitializationPage(ws: ws)
+        case .openfoam: OpenFOAMPage(ws: ws)
         case .runCalculation: RunCalculationPage(ws: ws)
         case .surfaces: SurfacesPage(ws: ws)
         case .graphicsMesh: MeshDisplayPage(ws: ws)

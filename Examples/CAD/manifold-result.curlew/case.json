@@ -1,0 +1,853 @@
+{
+  "boundaries" : {
+    "inlet" : {
+      "epsilon" : 0.0001,
+      "flowDirection" : [
+        1,
+        0,
+        0
+      ],
+      "freeStreamTemperature" : 300,
+      "gaugePressure" : 0,
+      "heatFlux" : 0,
+      "heatTransferCoefficient" : 10,
+      "hydraulicDiameter" : 0.1,
+      "k" : 0.001,
+      "machNumber" : 0.6,
+      "massFlowRate" : 1,
+      "modifiedTurbulentViscosity" : 0.0001,
+      "omega" : 1,
+      "rotationAxisDirection" : [
+        0,
+        0,
+        1
+      ],
+      "rotationAxisOrigin" : [
+        0,
+        0,
+        0
+      ],
+      "rotationSpeed" : 0,
+      "roughnessLength" : 0,
+      "scalars" : {
+
+      },
+      "shearCondition" : "no-slip",
+      "temperature" : 300,
+      "thermalCondition" : "adiabatic",
+      "turbulenceSpecification" : "intensity-and-viscosity-ratio",
+      "turbulentIntensity" : 0.02,
+      "turbulentLengthScale" : 0.01,
+      "turbulentViscosityRatio" : 10,
+      "type" : "velocity-inlet",
+      "velocity" : [
+        1,
+        0,
+        0
+      ],
+      "velocityMagnitude" : 0.5,
+      "velocitySpecification" : "magnitude-normal",
+      "wallMotion" : "stationary",
+      "wallVelocity" : [
+        0,
+        0,
+        0
+      ]
+    },
+    "outlet" : {
+      "epsilon" : 0.0001,
+      "flowDirection" : [
+        1,
+        0,
+        0
+      ],
+      "freeStreamTemperature" : 300,
+      "gaugePressure" : 0,
+      "heatFlux" : 0,
+      "heatTransferCoefficient" : 10,
+      "hydraulicDiameter" : 0.1,
+      "k" : 0.001,
+      "machNumber" : 0.6,
+      "massFlowRate" : 1,
+      "modifiedTurbulentViscosity" : 0.0001,
+      "omega" : 1,
+      "rotationAxisDirection" : [
+        0,
+        0,
+        1
+      ],
+      "rotationAxisOrigin" : [
+        0,
+        0,
+        0
+      ],
+      "rotationSpeed" : 0,
+      "roughnessLength" : 0,
+      "scalars" : {
+
+      },
+      "shearCondition" : "no-slip",
+      "temperature" : 300,
+      "thermalCondition" : "adiabatic",
+      "turbulenceSpecification" : "intensity-and-viscosity-ratio",
+      "turbulentIntensity" : 0.05,
+      "turbulentLengthScale" : 0.01,
+      "turbulentViscosityRatio" : 10,
+      "type" : "wall",
+      "velocity" : [
+        1,
+        0,
+        0
+      ],
+      "velocityMagnitude" : 1,
+      "velocitySpecification" : "magnitude-normal",
+      "wallMotion" : "stationary",
+      "wallVelocity" : [
+        0,
+        0,
+        0
+      ]
+    },
+    "outlet_ymin" : {
+      "epsilon" : 0.0001,
+      "flowDirection" : [
+        1,
+        0,
+        0
+      ],
+      "freeStreamTemperature" : 300,
+      "gaugePressure" : 0,
+      "heatFlux" : 0,
+      "heatTransferCoefficient" : 10,
+      "hydraulicDiameter" : 0.1,
+      "k" : 0.001,
+      "machNumber" : 0.6,
+      "massFlowRate" : 1,
+      "modifiedTurbulentViscosity" : 0.0001,
+      "omega" : 1,
+      "rotationAxisDirection" : [
+        0,
+        0,
+        1
+      ],
+      "rotationAxisOrigin" : [
+        0,
+        0,
+        0
+      ],
+      "rotationSpeed" : 0,
+      "roughnessLength" : 0,
+      "scalars" : {
+
+      },
+      "shearCondition" : "no-slip",
+      "temperature" : 300,
+      "thermalCondition" : "adiabatic",
+      "turbulenceSpecification" : "intensity-and-viscosity-ratio",
+      "turbulentIntensity" : 0.05,
+      "turbulentLengthScale" : 0.01,
+      "turbulentViscosityRatio" : 10,
+      "type" : "pressure-outlet",
+      "velocity" : [
+        1,
+        0,
+        0
+      ],
+      "velocityMagnitude" : 1,
+      "velocitySpecification" : "magnitude-normal",
+      "wallMotion" : "stationary",
+      "wallVelocity" : [
+        0,
+        0,
+        0
+      ]
+    },
+    "outlet_ymin2" : {
+      "epsilon" : 0.0001,
+      "flowDirection" : [
+        1,
+        0,
+        0
+      ],
+      "freeStreamTemperature" : 300,
+      "gaugePressure" : 0,
+      "heatFlux" : 0,
+      "heatTransferCoefficient" : 10,
+      "hydraulicDiameter" : 0.1,
+      "k" : 0.001,
+      "machNumber" : 0.6,
+      "massFlowRate" : 1,
+      "modifiedTurbulentViscosity" : 0.0001,
+      "omega" : 1,
+      "rotationAxisDirection" : [
+        0,
+        0,
+        1
+      ],
+      "rotationAxisOrigin" : [
+        0,
+        0,
+        0
+      ],
+      "rotationSpeed" : 0,
+      "roughnessLength" : 0,
+      "scalars" : {
+
+      },
+      "shearCondition" : "no-slip",
+      "temperature" : 300,
+      "thermalCondition" : "adiabatic",
+      "turbulenceSpecification" : "intensity-and-viscosity-ratio",
+      "turbulentIntensity" : 0.05,
+      "turbulentLengthScale" : 0.01,
+      "turbulentViscosityRatio" : 10,
+      "type" : "pressure-outlet",
+      "velocity" : [
+        1,
+        0,
+        0
+      ],
+      "velocityMagnitude" : 1,
+      "velocitySpecification" : "magnitude-normal",
+      "wallMotion" : "stationary",
+      "wallVelocity" : [
+        0,
+        0,
+        0
+      ]
+    },
+    "outlet_ymin3" : {
+      "epsilon" : 0.0001,
+      "flowDirection" : [
+        1,
+        0,
+        0
+      ],
+      "freeStreamTemperature" : 300,
+      "gaugePressure" : 0,
+      "heatFlux" : 0,
+      "heatTransferCoefficient" : 10,
+      "hydraulicDiameter" : 0.1,
+      "k" : 0.001,
+      "machNumber" : 0.6,
+      "massFlowRate" : 1,
+      "modifiedTurbulentViscosity" : 0.0001,
+      "omega" : 1,
+      "rotationAxisDirection" : [
+        0,
+        0,
+        1
+      ],
+      "rotationAxisOrigin" : [
+        0,
+        0,
+        0
+      ],
+      "rotationSpeed" : 0,
+      "roughnessLength" : 0,
+      "scalars" : {
+
+      },
+      "shearCondition" : "no-slip",
+      "temperature" : 300,
+      "thermalCondition" : "adiabatic",
+      "turbulenceSpecification" : "intensity-and-viscosity-ratio",
+      "turbulentIntensity" : 0.05,
+      "turbulentLengthScale" : 0.01,
+      "turbulentViscosityRatio" : 10,
+      "type" : "pressure-outlet",
+      "velocity" : [
+        1,
+        0,
+        0
+      ],
+      "velocityMagnitude" : 1,
+      "velocitySpecification" : "magnitude-normal",
+      "wallMotion" : "stationary",
+      "wallVelocity" : [
+        0,
+        0,
+        0
+      ]
+    },
+    "wall" : {
+      "epsilon" : 0.0001,
+      "flowDirection" : [
+        1,
+        0,
+        0
+      ],
+      "freeStreamTemperature" : 300,
+      "gaugePressure" : 0,
+      "heatFlux" : 0,
+      "heatTransferCoefficient" : 10,
+      "hydraulicDiameter" : 0.1,
+      "k" : 0.001,
+      "machNumber" : 0.6,
+      "massFlowRate" : 1,
+      "modifiedTurbulentViscosity" : 0.0001,
+      "omega" : 1,
+      "rotationAxisDirection" : [
+        0,
+        0,
+        1
+      ],
+      "rotationAxisOrigin" : [
+        0,
+        0,
+        0
+      ],
+      "rotationSpeed" : 0,
+      "roughnessLength" : 0,
+      "scalars" : {
+
+      },
+      "shearCondition" : "no-slip",
+      "temperature" : 300,
+      "thermalCondition" : "adiabatic",
+      "turbulenceSpecification" : "intensity-and-viscosity-ratio",
+      "turbulentIntensity" : 0.05,
+      "turbulentLengthScale" : 0.01,
+      "turbulentViscosityRatio" : 10,
+      "type" : "wall",
+      "velocity" : [
+        1,
+        0,
+        0
+      ],
+      "velocityMagnitude" : 1,
+      "velocitySpecification" : "magnitude-normal",
+      "wallMotion" : "stationary",
+      "wallVelocity" : [
+        0,
+        0,
+        0
+      ]
+    }
+  },
+  "cellZones" : {
+    "fluid" : {
+      "energySource" : 0,
+      "frameMotion" : false,
+      "kind" : "fluid",
+      "material" : "water-liquid",
+      "momentumSource" : [
+        0,
+        0,
+        0
+      ],
+      "rotationAxisDirection" : [
+        0,
+        0,
+        1
+      ],
+      "rotationAxisOrigin" : [
+        0,
+        0,
+        0
+      ],
+      "rotationSpeed" : 0
+    }
+  },
+  "controls" : {
+    "limits" : {
+      "maximumTemperature" : 5000,
+      "maximumViscosityRatio" : 100000,
+      "minimumEpsilon" : 1e-20,
+      "minimumK" : 1e-14,
+      "minimumOmega" : 1e-20,
+      "minimumTemperature" : 1
+    },
+    "linear" : {
+      "energy" : {
+        "absTol" : 1e-20,
+        "cycle" : "V",
+        "maxIterations" : 50,
+        "method" : "amg-bicgstab",
+        "rebuildInterval" : 50,
+        "relTol" : 0.05
+      },
+      "momentum" : {
+        "absTol" : 1e-20,
+        "cycle" : "V",
+        "maxIterations" : 30,
+        "method" : "amg-bicgstab",
+        "rebuildInterval" : 50,
+        "relTol" : 0.1
+      },
+      "pressure" : {
+        "absTol" : 1e-20,
+        "cycle" : "K",
+        "maxIterations" : 100,
+        "method" : "amg-cg",
+        "rebuildInterval" : 50,
+        "relTol" : 0.05
+      },
+      "scalars" : {
+        "absTol" : 1e-20,
+        "cycle" : "V",
+        "maxIterations" : 30,
+        "method" : "amg-bicgstab",
+        "rebuildInterval" : 50,
+        "relTol" : 0.1
+      },
+      "turbulence" : {
+        "absTol" : 1e-20,
+        "cycle" : "V",
+        "maxIterations" : 30,
+        "method" : "amg-bicgstab",
+        "rebuildInterval" : 50,
+        "relTol" : 0.1
+      },
+      "useGPU" : false
+    },
+    "urf" : {
+      "bodyForces" : 1,
+      "density" : 1,
+      "dissipationRate" : 0.8,
+      "energy" : 1,
+      "modifiedTurbulentViscosity" : 0.8,
+      "momentum" : 0.7,
+      "pressure" : 1,
+      "scalars" : 1,
+      "specificDissipationRate" : 0.8,
+      "turbulentKineticEnergy" : 0.8,
+      "turbulentViscosity" : 1
+    }
+  },
+  "expressions" : [
+
+  ],
+  "general" : {
+    "backend" : "openfoam",
+    "gravity" : [
+      0,
+      -9.81,
+      0
+    ],
+    "gravityEnabled" : false,
+    "operatingPressure" : 101325,
+    "operatingTemperature" : 288.16,
+    "referencePressureLocation" : [
+      0,
+      0,
+      0
+    ],
+    "solver" : "pressure-based",
+    "time" : "steady"
+  },
+  "initialization" : {
+    "computeFrom" : "",
+    "epsilon" : 0.0001,
+    "gaugePressure" : 0,
+    "hybridIterations" : 10,
+    "k" : 0.001,
+    "method" : "hybrid",
+    "modifiedTurbulentViscosity" : 0.0001,
+    "omega" : 1,
+    "patches" : [
+
+    ],
+    "temperature" : 300,
+    "velocity" : [
+      0,
+      0,
+      0
+    ]
+  },
+  "materials" : [
+    {
+      "density" : 1.225,
+      "densityMethod" : "constant",
+      "kind" : "fluid",
+      "molecularWeight" : 28.966,
+      "name" : "air",
+      "powerLawK" : 1,
+      "powerLawMax" : 1000,
+      "powerLawMin" : 1e-05,
+      "powerLawN" : 1,
+      "specificHeat" : 1006.43,
+      "sutherlandS" : 110.56,
+      "sutherlandT0" : 273.11,
+      "thermalConductivity" : 0.0242,
+      "thermalExpansion" : 0.0034,
+      "viscosity" : 1.7894e-05,
+      "viscosityMethod" : "constant"
+    },
+    {
+      "density" : 2719,
+      "densityMethod" : "constant",
+      "kind" : "solid",
+      "molecularWeight" : 28.966,
+      "name" : "aluminum",
+      "powerLawK" : 1,
+      "powerLawMax" : 1000,
+      "powerLawMin" : 1e-05,
+      "powerLawN" : 1,
+      "specificHeat" : 871,
+      "sutherlandS" : 110.56,
+      "sutherlandT0" : 273.11,
+      "thermalConductivity" : 202.4,
+      "thermalExpansion" : 0,
+      "viscosity" : 0,
+      "viscosityMethod" : "constant"
+    },
+    {
+      "density" : 998.2,
+      "densityMethod" : "constant",
+      "kind" : "fluid",
+      "molecularWeight" : 18.0152,
+      "name" : "water-liquid",
+      "powerLawK" : 1,
+      "powerLawMax" : 1000,
+      "powerLawMin" : 1e-05,
+      "powerLawN" : 1,
+      "specificHeat" : 4182,
+      "sutherlandS" : 110.56,
+      "sutherlandT0" : 273.11,
+      "thermalConductivity" : 0.6,
+      "thermalExpansion" : 0.000207,
+      "viscosity" : 0.001003,
+      "viscosityMethod" : "constant"
+    }
+  ],
+  "methods" : {
+    "conservativePressureGradient" : true,
+    "coupling" : "SIMPLEC",
+    "courantNumber" : 1,
+    "energy" : "second-order-upwind",
+    "flux" : "roe-fds",
+    "gradient" : "least-squares-cell-based",
+    "limitMomentum" : true,
+    "momentum" : "second-order-upwind",
+    "nonOrthogonalCorrectors" : 0,
+    "pisoCorrectors" : 1,
+    "pressure" : "second-order",
+    "scalars" : "second-order-upwind",
+    "transient" : "second-order-implicit",
+    "transposeStress" : false,
+    "turbulence" : "first-order-upwind"
+  },
+  "models" : {
+    "energy" : false,
+    "passiveScalars" : [
+
+    ],
+    "turbulentPrandtl" : 0.85,
+    "viscous" : "k-omega-sst",
+    "wallTreatment" : "automatic"
+  },
+  "openfoam" : {
+    "adjustTimeStep" : false,
+    "application" : "automatic",
+    "baffles" : [
+
+    ],
+    "caseDirectory" : "\/Users\/williamsepahi\/CurlewFoam\/cad-manifold\/run",
+    "checkMesh" : true,
+    "continueFromLatestTime" : false,
+    "cores" : 4,
+    "courantNumber" : false,
+    "customFunctions" : "",
+    "customStages" : [
+
+    ],
+    "cuttingPlanes" : [
+
+    ],
+    "decomposition" : "scotch",
+    "dictionaryAppends" : {
+
+    },
+    "energySolver" : {
+      "maxIter" : 1000,
+      "nCellsInCoarsestLevel" : 10,
+      "preconditioner" : "DILU",
+      "relTol" : 0.1,
+      "smoother" : "symGaussSeidel",
+      "solver" : "PBiCGStab",
+      "tolerance" : 1e-08
+    },
+    "extraFiles" : {
+
+    },
+    "fieldMinMax" : false,
+    "fileOverrides" : {
+
+    },
+    "initialFields" : "curlew",
+    "installation" : "",
+    "lambda2" : false,
+    "lesDelta" : "cubeRootVol",
+    "loadResults" : true,
+    "machNumber" : false,
+    "maxCo" : 1,
+    "maxDeltaT" : 1,
+    "momentumPredictor" : true,
+    "nCorrectors" : 2,
+    "nOuterCorrectors" : 1,
+    "outerResidual" : 0,
+    "patchOverrides" : [
+
+    ],
+    "postProcessing" : {
+      "afterSolve" : true,
+      "exportEnsight" : false,
+      "exportVTK" : true,
+      "functions" : [
+        "wallShearStress",
+        "yPlus",
+        "vorticity"
+      ],
+      "isoSurfaces" : [
+
+      ],
+      "lineSamples" : [
+        {
+          "end" : [
+            0.3,
+            0,
+            0
+          ],
+          "fields" : "U p",
+          "name" : "line1",
+          "points" : 100,
+          "start" : [
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "streamlineSeedEnd" : [
+        0,
+        1,
+        0
+      ],
+      "streamlineSeeds" : 40
+    },
+    "preProcessing" : {
+      "fullMeshCheck" : false,
+      "mapFieldsConsistent" : true,
+      "mapFieldsSource" : "",
+      "setFieldsRegions" : [
+
+      ]
+    },
+    "pressureCoefficient" : false,
+    "pressureSolver" : {
+      "maxIter" : 200,
+      "nCellsInCoarsestLevel" : 10,
+      "preconditioner" : "DIC",
+      "relTol" : 0.01,
+      "smoother" : "GaussSeidel",
+      "solver" : "GAMG",
+      "tolerance" : 1e-07
+    },
+    "probes" : [
+
+    ],
+    "purgeWrite" : 0,
+    "qCriterion" : false,
+    "radiation" : {
+      "absorption" : 0,
+      "emissivity" : 0.9,
+      "model" : "none",
+      "nPhi" : 3,
+      "nTheta" : 3,
+      "patchEmissivity" : {
+
+      },
+      "solverFrequency" : 10
+    },
+    "residualEnergy" : 1e-07,
+    "residualP" : 1e-05,
+    "residualTurbulence" : 1e-06,
+    "residualU" : 1e-06,
+    "residualsFile" : true,
+    "runTimeModifiable" : true,
+    "runTimeStopReport" : "",
+    "runTimeStopTolerance" : 0.0001,
+    "runTimeStopWindow" : 100,
+    "schemes" : {
+      "ddt" : "",
+      "divEnergy" : "",
+      "divScalars" : "",
+      "divTurbulence" : "",
+      "divU" : "",
+      "grad" : "",
+      "gradU" : "",
+      "interpolation" : "",
+      "laplacian" : "",
+      "snGrad" : "",
+      "wallDistance" : "meshWave"
+    },
+    "startFrom" : "latestTime",
+    "stopAt" : "endTime",
+    "timePrecision" : 10,
+    "turbOnFinalIterOnly" : true,
+    "turbulence" : "fromCurlew",
+    "turbulenceFields" : false,
+    "turbulenceSolver" : {
+      "maxIter" : 1000,
+      "nCellsInCoarsestLevel" : 10,
+      "preconditioner" : "DILU",
+      "relTol" : 0.1,
+      "smoother" : "symGaussSeidel",
+      "solver" : "smoothSolver",
+      "tolerance" : 1e-08
+    },
+    "velocitySolver" : {
+      "maxIter" : 1000,
+      "nCellsInCoarsestLevel" : 10,
+      "preconditioner" : "DILU",
+      "relTol" : 0.1,
+      "smoother" : "symGaussSeidel",
+      "solver" : "smoothSolver",
+      "tolerance" : 1e-08
+    },
+    "vorticity" : false,
+    "wallHeatFlux" : false,
+    "wallShearStress" : true,
+    "wallTreatment" : "automatic",
+    "writeCompression" : false,
+    "writeFormat" : "binary",
+    "writeInterval" : 0,
+    "writePrecision" : 10,
+    "yPlus" : true
+  },
+  "reference" : {
+    "area" : 0.0006988114217768058,
+    "density" : 998.2,
+    "length" : 0.029828750166891536,
+    "pressure" : 0,
+    "temperature" : 288.16,
+    "velocity" : 0.5,
+    "viscosity" : 0.001003
+  },
+  "reports" : [
+    {
+      "direction" : [
+        1,
+        0,
+        0
+      ],
+      "expression" : "",
+      "field" : "pressure",
+      "kind" : "mass-flow-rate",
+      "momentCentre" : [
+        0,
+        0,
+        0
+      ],
+      "name" : "mass-flow-inlet",
+      "plot" : true,
+      "print" : true,
+      "zones" : [
+        "inlet"
+      ]
+    },
+    {
+      "direction" : [
+        1,
+        0,
+        0
+      ],
+      "expression" : "",
+      "field" : "pressure",
+      "kind" : "mass-flow-rate",
+      "momentCentre" : [
+        0,
+        0,
+        0
+      ],
+      "name" : "mass-flow-outlet_ymin",
+      "plot" : true,
+      "print" : true,
+      "zones" : [
+        "outlet_ymin"
+      ]
+    },
+    {
+      "direction" : [
+        1,
+        0,
+        0
+      ],
+      "expression" : "",
+      "field" : "pressure",
+      "kind" : "mass-flow-rate",
+      "momentCentre" : [
+        0,
+        0,
+        0
+      ],
+      "name" : "mass-flow-outlet_ymin2",
+      "plot" : true,
+      "print" : true,
+      "zones" : [
+        "outlet_ymin2"
+      ]
+    },
+    {
+      "direction" : [
+        1,
+        0,
+        0
+      ],
+      "expression" : "",
+      "field" : "pressure",
+      "kind" : "mass-flow-rate",
+      "momentCentre" : [
+        0,
+        0,
+        0
+      ],
+      "name" : "mass-flow-outlet_ymin3",
+      "plot" : true,
+      "print" : true,
+      "zones" : [
+        "outlet_ymin3"
+      ]
+    },
+    {
+      "direction" : [
+        1,
+        0,
+        0
+      ],
+      "expression" : "",
+      "field" : "pressure",
+      "kind" : "area-weighted-average",
+      "momentCentre" : [
+        0,
+        0,
+        0
+      ],
+      "name" : "inlet-pressure",
+      "plot" : true,
+      "print" : true,
+      "zones" : [
+        "inlet"
+      ]
+    }
+  ],
+  "residuals" : {
+    "checkConvergence" : true,
+    "continuity" : 0.001,
+    "energy" : 1e-06,
+    "scalars" : 1e-05,
+    "turbulence" : 0.001,
+    "velocity" : 0.001
+  },
+  "run" : {
+    "autosaveInterval" : 0,
+    "dataSampling" : false,
+    "iterations" : 800,
+    "maxIterationsPerTimeStep" : 20,
+    "numberOfTimeSteps" : 100,
+    "reportingInterval" : 1,
+    "timeStepSize" : 0.001
+  },
+  "title" : "manifold-internalFlow"
+}

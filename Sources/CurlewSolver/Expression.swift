@@ -261,3 +261,88 @@ struct ExprParser {
         throw ExpressionError(message: "unexpected character '\(c)'")
     }
 }
+
+// MARK: - OpenFOAM translation
+
+extension Expr {
+    /// True when the expression (or a named expression it uses) depends on time `t`.
+    public var dependsOnTime: Bool { usesTime(root, depth: 0) }
+
+    func usesTime(_ n: Node, depth: Int) -> Bool {
+        guard depth < 64 else { return false }
+        switch n {
+        case .variable(let i): return i == 3
+        case .named(let name): return named[name].map { $0.usesTime($0.root, depth: depth + 1) } ?? false
+        case .unary(_, let a): return usesTime(a, depth: depth)
+        case .binary(_, let a, let b): return usesTime(a, depth: depth) || usesTime(b, depth: depth)
+        case .call(_, let args): return args.contains { usesTime($0, depth: depth) }
+        case .num: return false
+        }
+    }
+
+    /// The expression in OpenFOAM's expression syntax (exprField sources, exprFixedValue
+    /// boundary conditions): x, y, z become cell or face centre components `pos().x()`…,
+    /// t becomes `time()`, named expressions are inlined, `^` becomes `pow`, comparisons
+    /// used as numbers become `(c ? 1 : 0)` and `if(c, a, b)` becomes `(c ? a : b)`.
+    public func openFOAM() -> String { foam(root, bool: false, depth: 0) }
+
+    public static func foamNumber(_ v: Double) -> String {
+        var s = "\(abs(v))"          // shortest round-trip form
+        if !s.contains(".") && !s.contains("e") { s += ".0" }
+        if v < 0 { s = "-" + s }
+        return v < 0 ? "(\(s))" : s
+    }
+
+    func foam(_ n: Node, bool: Bool, depth: Int) -> String {
+        func val(_ x: Node) -> String { foam(x, bool: false, depth: depth) }
+        func cond(_ x: Node) -> String { foam(x, bool: true, depth: depth) }
+        let comparisons: Set<String> = ["<", ">", "<=", ">=", "==", "!="]
+        switch n {
+        case .num(let v):
+            return bool ? "(\(Expr.foamNumber(v)) != 0)" : Expr.foamNumber(v)
+        case .variable(let i):
+            let s = ["pos().x()", "pos().y()", "pos().z()", "time()"][i]
+            return bool ? "(\(s) != 0)" : s
+        case .named(let name):
+            guard let e = named[name], depth < 64 else { return "0" }
+            return "(" + e.foam(e.root, bool: bool, depth: depth + 1) + ")"
+        case .unary(_, let a):
+            return bool ? "(-\(val(a)) != 0)" : "(-\(val(a)))"
+        case .binary(let op, let a, let b):
+            if comparisons.contains(op) {
+                let c = "(\(val(a)) \(op) \(val(b)))"
+                return bool ? c : "(\(c) ? 1.0 : 0.0)"
+            }
+            if op == "&&" || op == "||" {
+                let c = "(\(cond(a)) \(op) \(cond(b)))"
+                return bool ? c : "(\(c) ? 1.0 : 0.0)"
+            }
+            let v = op == "^" ? "pow(\(val(a)), \(val(b)))" : "(\(val(a)) \(op) \(val(b)))"
+            return bool ? "(\(v) != 0)" : v
+        case .call(let f, let args):
+            let v: String
+            switch f {
+            case "if": v = "(\(cond(args[0])) ? \(val(args[1])) : \(val(args[2])))"
+            case "abs": v = "mag(\(val(args[0])))"
+            case "ln": v = "log(\(val(args[0])))"
+            case "step": v = "((\(val(args[0])) >= 0) ? 1.0 : 0.0)"
+            case "sign": v = "((\(val(args[0])) > 0) ? 1.0 : ((\(val(args[0])) < 0) ? -1.0 : 0.0))"
+            case "mod":
+                let a = val(args[0]), b = val(args[1])
+                v = "(\(a) - \(b)*(((\(a))/(\(b)) >= 0) ? floor((\(a))/(\(b))) : ceil((\(a))/(\(b)))))"
+            case "log10": v = "(log(\(val(args[0])))/log(10.0))"
+            case "atan2":
+                // patch expressions have no atan2
+                let a = val(args[0]), b = val(args[1])
+                v = "((\(b) > 0) ? atan((\(a))/(\(b))) : ((\(b) < 0) ? (atan((\(a))/(\(b))) + ((\(a) >= 0) ? pi() : -pi())) : ((\(a) >= 0) ? 0.5*pi() : -0.5*pi())))"
+            case "min", "max":
+                var acc = val(args[0])
+                for x in args.dropFirst() { acc = "\(f)(\(acc), \(val(x)))" }
+                v = acc
+            default:
+                v = "\(f)(" + args.map(val).joined(separator: ", ") + ")"
+            }
+            return bool ? "(\(v) != 0)" : v
+        }
+    }
+}

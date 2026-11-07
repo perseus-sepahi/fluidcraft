@@ -2,6 +2,7 @@ import Foundation
 import CurlewMesh
 import CurlewSolver
 import CurlewPost
+import CurlewFoam
 import AppKit
 
 /// Text command interface (console). Paths follow a Fluent-like menu tree.
@@ -33,6 +34,14 @@ extension Workspace {
       /plot/xy <field> x0 y0 z0 x1 y1 z1     XY plot along a line
       /validate <keyword>                    run a validation benchmark (e.g. cavity, sod, ramp)
       /tutorial <id>                         \(TutorialCatalog.all.map(\.id).joined(separator: ", "))
+      /show <page>                           open a task page (e.g. openfoam, boundary-conditions)
+      /define/backend <curlew|openfoam>      solver used by Calculate
+      /openfoam/run | write | load | clean   run, write, load results of, or clean the OpenFOAM case
+      /openfoam/set <key> <value>            application, turbulence, cores, dir, installation, writeFormat, initialFields
+      /openfoam/paraview                     open the case in ParaView
+      /mesh/cad <path> [gmsh|snappy] [internal] [axis=0|1|2] [unit=mm]   import and mesh CAD (STEP, IGES, BREP, STL, OBJ, PLY, OFF, 3MF)
+      /cad/sample <name>                     open a CAD sample on the CAD Analysis page (\(CADSample.allCases.map(\.rawValue).joined(separator: ", ")))
+      /cad/analyse [run]                     mesh and set up the CAD Analysis page's model (and run it)
     """
 
     func execute(_ raw: String) {
@@ -183,6 +192,64 @@ extension Workspace {
             }
         case "/quit":
             NSApp.terminate(nil)
+        case "/cad/sample":
+            guard let n = arg(0), let sm = CADSample(rawValue: n) else { log("samples: " + CADSample.allCases.map(\.rawValue).joined(separator: ", "), .warning); return }
+            chooseCADSample(sm)
+        case "/cad/analyse", "/cad/analyze":
+            guard !cadSpec.path.isEmpty else { log("Choose a CAD file or sample on the CAD Analysis page first.", .warning); return }
+            buildCADAnalysis(run: arg(0)?.lowercased() == "run")
+        case "/show":
+            guard let n = arg(0)?.lowercased() else { log("usage: /show <page>", .warning); return }
+            let all: [OutlineItem] = [.module, .meshGeneration, .meshInfo, .general, .models, .materials, .cellZones, .boundaries, .expressions, .referenceValues,
+                                      .methods, .controls, .reportDefinitions, .monitors, .initialization, .openfoam, .runCalculation,
+                                      .surfaces, .graphicsMesh, .contours, .vectors, .pathlines, .xyPlot, .reports, .validation]
+            if let item = all.first(where: { $0.title.lowercased().replacingOccurrences(of: " ", with: "-").hasPrefix(n) }) { selection = item }
+            else { log("pages: " + all.map { $0.title.lowercased().replacingOccurrences(of: " ", with: "-") }.joined(separator: ", "), .warning) }
+        case "/define/backend":
+            guard let v = arg(0), let b = SolverBackend(rawValue: v.lowercased()) else { log("usage: /define/backend <curlew|openfoam>", .warning); return }
+            setup.general.backend = b
+            log("Calculate now uses \(b.displayName).")
+        case "/openfoam/run":
+            calculateWithOpenFOAM()
+        case "/openfoam/write":
+            writeFoamCase()
+        case "/openfoam/load":
+            loadFoamResults()
+        case "/openfoam/clean":
+            cleanFoamCase()
+        case "/openfoam/paraview":
+            openFoamInParaView()
+        case "/openfoam/set":
+            guard let k = arg(0), let v = arg(1) else { log("usage: /openfoam/set <key> <value>", .warning); return }
+            switch k {
+            case "application": if let a = FoamApplication(rawValue: v) { setup.openfoam.application = a } else { log("unknown application \(v)", .warning) }
+            case "turbulence": if let t = FoamTurbulenceModel(rawValue: v) { setup.openfoam.turbulence = t } else { log("unknown turbulence model \(v)", .warning) }
+            case "cores": setup.openfoam.cores = max(1, Int(v) ?? 1)
+            case "dir", "caseDirectory": setup.openfoam.caseDirectory = (v as NSString).expandingTildeInPath
+            case "installation": setup.openfoam.installation = (v as NSString).expandingTildeInPath
+            case "writeFormat": setup.openfoam.writeFormat = v
+            case "initialFields": if let f = FoamInitialFields(rawValue: v) { setup.openfoam.initialFields = f }
+            default: log("unknown key \(k)", .warning); return
+            }
+            log("openfoam.\(k) = \(v)")
+        case "/mesh/cad":
+            guard let p = arg(0) else { log("usage: /mesh/cad <path> [gmsh|snappy] [internal] [axis=0] [unit=mm]", .warning); return }
+            let path = (p as NSString).expandingTildeInPath
+            let external = !parts.contains("internal")
+            let axis = parts.first { $0.hasPrefix("axis=") }.flatMap { Int($0.dropFirst(5)) } ?? 0
+            let unit = parts.first { $0.hasPrefix("unit=") }.flatMap { CADUnit(rawValue: String($0.dropFirst(5))) } ?? .metre
+            if parts.contains("snappy") {
+                var s = SnappySettings(); s.path = path; s.external = external; s.flowAxis = axis; s.unit = unit
+                s.cores = max(1, setup.openfoam.cores)
+                meshWithSnappy(s)
+            } else {
+                var ms = MeshingSettings(template: .cad(path: path, external: external, flowAxis: axis, padding: [3, 8, 3, 3, 3, 3]))
+                ms.cadUnit = unit
+                ms.maxSize = parts.first { $0.hasPrefix("max=") }.flatMap { Double($0.dropFirst(4)) } ?? 0.4
+                ms.wallSize = parts.first { $0.hasPrefix("wall=") }.flatMap { Double($0.dropFirst(5)) } ?? 0.05
+                ms.growthDistance = 1.5
+                generateMesh(ms)
+            }
         case "/tutorial":
             if let id = arg(0), let t = TutorialCatalog.all.first(where: { $0.id == id }) { loadTutorial(t) }
             else { log("tutorials: " + TutorialCatalog.all.map(\.id).joined(separator: ", "), .warning) }

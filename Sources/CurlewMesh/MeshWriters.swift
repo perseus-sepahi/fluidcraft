@@ -23,14 +23,20 @@ public enum MeshWriters {
         switch k {
         case .wall: return "wall"
         case .empty: return "empty"
-        case .symmetry: return "symmetryPlane"
+        // generic constraint type: also valid for non-planar (snapped, curved) patches
+        case .symmetry: return "symmetry"
         default: return "patch"
         }
     }
 
-    /// Writes `constant/polyMesh` under `caseDir`.
-    public static func writeFoamPolyMesh(_ m: Mesh, caseDir: URL) throws {
-        let dir = caseDir.appendingPathComponent("constant/polyMesh")
+    /// Writes `constant/polyMesh` under `caseDir`. `kindOverride` replaces a zone's kind
+    /// (by name) when the case setup retyped it, so patch and field types agree.
+    /// `region` writes `constant/<region>/polyMesh` (multi-region cases); `patchEntries`
+    /// replaces the generated `type …;` line of a patch with the given entries (e.g. a
+    /// `mappedWall` with its sample region and patch).
+    public static func writeFoamPolyMesh(_ m: Mesh, caseDir: URL, kindOverride: [String: ZoneKind] = [:],
+                                         region: String? = nil, patchEntries: [String: String] = [:]) throws {
+        let dir = caseDir.appendingPathComponent(region.map { "constant/\($0)/polyMesh" } ?? "constant/polyMesh")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         var s = foamHeader("vectorField", "points")
         s += "\(m.nPoints)\n(\n"
@@ -58,13 +64,31 @@ public enum MeshWriters {
         s = foamHeader("polyBoundaryMesh", "boundary")
         s += "\(m.boundaryZones.count)\n(\n"
         for z in m.boundaryZones {
-            let t = foamPatchType(z.kind)
-            s += "    \(foamName(z.name))\n    {\n        type            \(t);\n"
-            if t == "wall" { s += "        inGroups        1(wall);\n" }
+            let t = foamPatchType(z.kind == .empty ? .empty : (kindOverride[z.name] ?? z.kind))
+            s += "    \(foamName(z.name))\n    {\n"
+            if let extra = patchEntries[z.name] {
+                s += extra.split(separator: "\n").map { "        " + $0 }.joined(separator: "\n") + "\n"
+            } else {
+                s += "        type            \(t);\n"
+                if t == "wall" { s += "        inGroups        1(wall);\n" }
+            }
             s += "        nFaces          \(z.count);\n        startFace       \(z.start);\n    }\n"
         }
         s += ")\n"
         try s.write(to: dir.appendingPathComponent("boundary"), atomically: true, encoding: .utf8)
+
+        // Cell zones: needed by fvOptions/MRF/porosity selections (selectionMode cellZone).
+        s = foamHeader("regIOobject", "cellZones")
+        s += "\(m.cellZones.count)\n(\n"
+        var members = [[Int32]](repeating: [], count: m.cellZones.count)
+        for c in 0..<m.nCells { members[Int(m.cellZone[c])].append(Int32(c)) }
+        for (i, z) in m.cellZones.enumerated() {
+            s += "\(foamName(z.name))\n{\n    type cellZone;\ncellLabels      List<label> \(members[i].count)\n(\n"
+            s += members[i].map { String($0) }.joined(separator: "\n")
+            s += "\n)\n;\n}\n"
+        }
+        s += ")\n"
+        try s.write(to: dir.appendingPathComponent("cellZones"), atomically: true, encoding: .utf8)
     }
 
     /// OpenFOAM patch names must be valid words.

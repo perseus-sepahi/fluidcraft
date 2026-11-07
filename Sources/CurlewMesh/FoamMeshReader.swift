@@ -4,7 +4,9 @@ import Compression
 /// Reader for OpenFOAM `constant/polyMesh` (ASCII or binary, optionally gzipped).
 public enum FoamMeshReader {
     /// `url` may point at a case directory, its `constant` directory or `polyMesh` itself.
-    public static func read(url: URL) throws -> Mesh {
+    /// With `preserveOrder`, cells and faces keep OpenFOAM's numbering, so `internalField`
+    /// and patch lists of that case map one-to-one onto the Curlew mesh.
+    public static func read(url: URL, preserveOrder: Bool = false) throws -> Mesh {
         var dir = url
         let fm = FileManager.default
         if fm.fileExists(atPath: dir.appendingPathComponent("constant/polyMesh").path) { dir = dir.appendingPathComponent("constant/polyMesh") }
@@ -26,6 +28,7 @@ public enum FoamMeshReader {
 
         let nCells = (owner.max().map { Int($0) } ?? -1) + 1
         var b = MeshBuilder()
+        b.preserveOrder = preserveOrder
         b.points = points
         b.nCells = max(nCells, (neighbour.max().map { Int($0) } ?? -1) + 1)
         for f in 0..<neighbour.count { b.addFace(faces[f], c0: owner[f], c1: neighbour[f]) }
@@ -198,6 +201,9 @@ public enum FoamMeshReader {
         }
         return out
     }
+
+    /// Decompress a gzip stream (OpenFOAM `writeCompression on` files).
+    public static func gunzipData(_ data: Data) throws -> Data { try gunzip(data) }
 
     static func gunzip(_ data: Data) throws -> Data {
         let b = [UInt8](data)

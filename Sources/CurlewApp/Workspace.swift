@@ -5,14 +5,16 @@ import CurlewMesh
 import CurlewLinear
 import CurlewSolver
 import CurlewPost
+import CurlewFoam
 
 enum OutlineItem: Hashable, Identifiable {
     // Meshing
-    case meshGeneration, meshInfo
+    case module
+    case meshGeneration, cadAnalysis, meshInfo
     // Setup
     case general, models, materials, cellZones, boundaries, expressions, referenceValues
     // Solution
-    case methods, controls, reportDefinitions, monitors, initialization, runCalculation
+    case methods, controls, reportDefinitions, monitors, initialization, openfoam, runCalculation
     // Results
     case surfaces, graphicsMesh, contours, vectors, pathlines, xyPlot, reports
     // Help
@@ -22,7 +24,9 @@ enum OutlineItem: Hashable, Identifiable {
 
     var title: String {
         switch self {
+        case .module: return "Module"
         case .meshGeneration: return "Mesh Generation"
+        case .cadAnalysis: return "CAD Analysis"
         case .meshInfo: return "Mesh & Quality"
         case .general: return "General"
         case .models: return "Models"
@@ -36,6 +40,7 @@ enum OutlineItem: Hashable, Identifiable {
         case .reportDefinitions: return "Report Definitions"
         case .monitors: return "Monitors"
         case .initialization: return "Initialization"
+        case .openfoam: return "OpenFOAM"
         case .runCalculation: return "Run Calculation"
         case .surfaces: return "Surfaces"
         case .graphicsMesh: return "Mesh Display"
@@ -50,7 +55,9 @@ enum OutlineItem: Hashable, Identifiable {
 
     var symbol: String {
         switch self {
+        case .module: return "square.stack.3d.up"
         case .meshGeneration: return "square.grid.3x3.square"
+        case .cadAnalysis: return "cube.transparent"
         case .meshInfo: return "checkmark.seal"
         case .general: return "gearshape"
         case .models: return "wind"
@@ -64,6 +71,7 @@ enum OutlineItem: Hashable, Identifiable {
         case .reportDefinitions: return "list.bullet.rectangle"
         case .monitors: return "waveform.path.ecg"
         case .initialization: return "sparkles"
+        case .openfoam: return "terminal"
         case .runCalculation: return "play.circle"
         case .surfaces: return "square.on.square.dashed"
         case .graphicsMesh: return "grid"
@@ -122,7 +130,7 @@ final class Workspace {
     var setup = CaseSetup()
     var solver: PressureBasedSolver?
     var post: PostProcessor?
-    var selection: OutlineItem? = .meshGeneration
+    var selection: OutlineItem? = .module
     var console: [ConsoleLine] = []
     var isRunning = false
     var isMeshing = false
@@ -144,6 +152,32 @@ final class Workspace {
     var flowTime = 0.0
     var validationResults: [ValidationRow] = []
     var cameraResetToken = 0
+    // OpenFOAM backend
+    var foamInstallations: [FoamInstallation] = []
+    /// OpenFOAM settings from a case opened from disk that run something beyond the generated
+    /// case (stages, raw function objects, dictionary text, extra files); shown to the user and
+    /// approved before the case is first written or run.
+    var foamUnapprovedContent: [String] = []
+    /// Module selected in the ribbon, and every module's parameters.
+    var activeModule: AppModule = .windFarm
+    var moduleParams = ModuleParameters()
+    var moduleCores = max(1, min(8, ProcessInfo.processInfo.activeProcessorCount / 2))
+    // PINN
+    var pinnJob: PINNJob?
+    var pinnStatus = ""
+    var pinnLoss: [(epoch: Int, loss: Double)] = []
+    var pinnBusy = false
+    // AI assistant
+    var aiConversation: [AIMessage] = []
+    var aiBusy = false
+    var aiError = ""
+    /// CAD Analysis page: file, analysis type and options.
+    var cadSpec = CADAnalysisSpec()
+    var foamProbe = ""
+    var foamStatus = ""
+    var foamLastCase: URL?
+    @ObservationIgnored var foamJob: FoamSolve?
+    @ObservationIgnored var foamCancel = false
     @ObservationIgnored weak var viewController: ViewController?
 
     init() {
@@ -151,6 +185,7 @@ final class Workspace {
         log("Start with Mesh Generation (built-in block/O-grid meshers or Gmsh), or File > Import Mesh (Fluent .msh, Gmsh .msh, OpenFOAM polyMesh).", .info)
         if let exe = GmshDriver.executable { log("Gmsh found: \(exe.path)", .info) }
         else { log("Gmsh not found — CAD meshing templates need Gmsh.app in /Applications.", .warning) }
+        refreshFoamInstallations()
         // Test hook: CURLEW_SCRIPT="cmd1; cmd2; ..." runs console commands after launch.
         if let script = ProcessInfo.processInfo.environment["CURLEW_SCRIPT"] {
             let cmds = script.split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
@@ -284,6 +319,13 @@ final class Workspace {
     }
 
     func calculate() {
+        if setup.general.backend == .openfoam {
+            if foamInstallations.isEmpty && FoamDiscovery.discover().isEmpty {
+                log("No OpenFOAM installation found (install openfoam.com's OpenFOAM for macOS, or set it on the OpenFOAM page); solving with Curlew's built-in solver instead.", .warning)
+            } else {
+                calculateWithOpenFOAM(); return
+            }
+        }
         guard !isRunning, let s = ensureSolver() else { return }
         if !initialized { initialize() }
         guard initialized else { return }
@@ -347,6 +389,7 @@ final class Workspace {
     }
 
     func stop() {
+        if let job = foamJob { foamCancel = true; job.cancel(); log("Stopping OpenFOAM…", .warning); return }
         solver?.stopRequested = true
         log("Interrupt requested…", .warning)
     }
