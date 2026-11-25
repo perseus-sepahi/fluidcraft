@@ -82,4 +82,22 @@ import Foundation
         #expect(!bad.succeeded && bad.log.joined().contains("no field 'nope'"))
         try? FileManager.default.removeItem(at: dir)
     }
+
+    /// A case folder from elsewhere may plant symlinks where Curlew writes its outputs.
+    @Test func refusesSymlinkedOutputFolders() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("curlew-link-\(UUID().uuidString.prefix(6))")
+        let victim = fm.temporaryDirectory.appendingPathComponent("curlew-victim-\(UUID().uuidString.prefix(6))")
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: victim, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir); try? fm.removeItem(at: victim) }
+        try fm.createSymbolicLink(at: dir.appendingPathComponent("curlew-post"), withDestinationURL: victim)
+        #expect(throws: PostScriptError.self) { try PostScriptPaths.requireSafe(dir.appendingPathComponent("curlew-post/out/x"), inside: dir) }
+        try fm.removeItem(at: dir.appendingPathComponent("curlew-post"))
+        try PostScriptPaths.requireSafe(dir.appendingPathComponent("curlew-post/out/x"), inside: dir)
+        let lib = try PostScriptPaths.privateDirectory()
+        defer { try? fm.removeItem(at: lib) }
+        #expect(!lib.path.hasPrefix(dir.path))
+        #expect((try fm.attributesOfItem(atPath: lib.path)[.posixPermissions] as? Int) == 0o700)
+    }
 }

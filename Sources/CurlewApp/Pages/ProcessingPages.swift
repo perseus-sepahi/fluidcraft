@@ -48,6 +48,8 @@ extension Workspace {
     /// Run one Python post-processing script on the latest time of the OpenFOAM case.
     func runPostScript(_ script: FoamPostScript) {
         guard postScriptRunning == nil else { return }
+        // scripts saved in a case opened from disk run code: ask first, like any custom case content
+        guard approveFoamContent() else { return }
         let dir = foamLastCase ?? foamCaseDirectory
         let s = setup
         postScriptRunning = script.name

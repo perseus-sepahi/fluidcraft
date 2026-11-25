@@ -199,17 +199,24 @@ public final class PostScriptRun: @unchecked Sendable {
         let fm = FileManager.default
         guard !script.code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw PostScriptError("script \(script.name) is empty") }
         guard fm.isExecutableFile(atPath: python) else { throw PostScriptError("no Python at \(python) (Settings › Machine Learning sets the interpreter)") }
+        // Outputs and exported data go into <case>/curlew-post; every folder there is checked to
+        // be a real directory inside the case (a case from elsewhere may carry symlinks).
         let root = dir.appendingPathComponent("curlew-post")
-        let lib = root.appendingPathComponent("lib"), scripts = root.appendingPathComponent("scripts")
-        let base = (script.fileName as NSString).deletingPathExtension
-        let out = root.appendingPathComponent("out/\(base)")
-        for d in [lib, scripts] { try fm.createDirectory(at: d, withIntermediateDirectories: true) }
+        let base = ((script.fileName as NSString).lastPathComponent as NSString).deletingPathExtension
+        guard !base.isEmpty, !base.hasPrefix(".") else { throw PostScriptError("invalid script name \(script.fileName)") }
+        let out = root.appendingPathComponent("out").appendingPathComponent(base)
+        let dataDir = root.appendingPathComponent("data")
+        for d in [root, root.appendingPathComponent("out"), out, dataDir] { try PostScriptPaths.requireSafe(d, inside: dir) }
         try? fm.removeItem(at: out)
         try fm.createDirectory(at: out, withIntermediateDirectories: true)
         log("Exporting the solution for Python…")
-        let (data, t) = try PostScriptExport.export(caseDirectory: dir, time: time, setup: setup, to: root.appendingPathComponent("data"))
+        let (data, t) = try PostScriptExport.export(caseDirectory: dir, time: time, setup: setup, to: dataDir)
+        // The module and the script copy live in a private folder Curlew creates outside the
+        // case; only that folder goes on sys.path.
+        let lib = try PostScriptPaths.privateDirectory()
+        defer { try? fm.removeItem(at: lib) }
         try PostScriptModule.source.write(to: lib.appendingPathComponent("curlew_post.py"), atomically: true, encoding: .utf8)
-        let scriptURL = scripts.appendingPathComponent(script.fileName)
+        let scriptURL = lib.appendingPathComponent("script_\(base).py")
         try script.code.write(to: scriptURL, atomically: true, encoding: .utf8)
 
         let p = Process()
@@ -224,7 +231,7 @@ public final class PostScriptRun: @unchecked Sendable {
         env["CURLEW_POST_OUT"] = out.path
         env["CURLEW_CASE"] = dir.path
         env["MPLBACKEND"] = "Agg"
-        env["MPLCONFIGDIR"] = root.appendingPathComponent(".matplotlib").path
+        env["MPLCONFIGDIR"] = lib.appendingPathComponent(".matplotlib").path
         p.environment = env
         p.currentDirectoryURL = out
         let pipe = Pipe(); p.standardOutput = pipe; p.standardError = pipe; p.standardInput = FileHandle.nullDevice
@@ -437,4 +444,33 @@ for q in (5, 50, 95):
 cp.report(f"{FIELD} volume mean", mean)
 cp.report(f"{FIELD} RMS deviation", rms)
 """#
+}
+
+/// Path checks for Python post-processing in a case directory that may come from elsewhere.
+enum PostScriptPaths {
+    /// Throws unless `url` (if it exists) and every existing folder between `base` and it are
+    /// real directories, not symbolic links, and `url` resolves inside `base`.
+    static func requireSafe(_ url: URL, inside base: URL) throws {
+        let fm = FileManager.default
+        let b = base.standardizedFileURL.resolvingSymlinksInPath().path
+        let rel = url.standardizedFileURL.path.dropFirst(base.standardizedFileURL.path.count)
+        var cur = base.standardizedFileURL
+        for comp in rel.split(separator: "/") {
+            guard comp != "..", comp != "." else { throw PostScriptError("unsafe path \(url.path)") }
+            cur = cur.appendingPathComponent(String(comp))
+            guard let attrs = try? fm.attributesOfItem(atPath: cur.path) else { break }   // not created yet
+            if attrs[.type] as? FileAttributeType != .typeDirectory {
+                throw PostScriptError("\(cur.path) is not a plain folder (symbolic link or file); remove it before running Python scripts on this case")
+            }
+        }
+        let resolved = url.standardizedFileURL.resolvingSymlinksInPath().path
+        guard resolved == b || resolved.hasPrefix(b + "/") else { throw PostScriptError("\(url.path) is outside the case") }
+    }
+
+    /// A new folder only the current user can read, outside any case.
+    static func privateDirectory() throws -> URL {
+        let d = FileManager.default.temporaryDirectory.appendingPathComponent("curlew-post-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: d, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        return d
+    }
 }
