@@ -61,6 +61,9 @@ public final class FlowState: @unchecked Sendable {
     public var time = 0.0
     public var timeStep = 0
     public var iteration = 0
+    /// These are initial fields (Curlew's initialization), not a solution: OpenFOAM may still
+    /// run potentialFoam on them.
+    public var isInitialization = false
 
     public init(nCells: Int, nBoundary: Int, nFaces: Int) {
         self.nCells = nCells; self.nBoundary = nBoundary; self.nFaces = nFaces

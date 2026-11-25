@@ -46,8 +46,8 @@ struct MeshGenerationPage: View {
         Form {
             Section("Generate a Mesh") {
                 Picker("Method", selection: $method) {
-                    Text("Block (structured, Cartesian)").tag(0)
-                    Text("Cylinder O-grid (2D)").tag(1)
+                    Text("Block (structured, Cartesian) — blockMesh").tag(0)
+                    Text("Cylinder O-grid (2D) — blockMesh").tag(1)
                     Text("Gmsh templates").tag(2)
                     Text("CAD geometry, mesh only (STEP, IGES, STL, OBJ, …)").tag(3)
                 }
@@ -96,7 +96,8 @@ struct MeshGenerationPage: View {
                                              z: threeD ? BlockAxis(from: bz[0], to: bz[1], cells: nz, grading: gz) : nil,
                                              depth: depth, sideKinds: sideKinds)
                     if obstacle && obs.count == 6 { spec.obstacles = [obs] }
-                    ws.buildBlockMesh(spec)
+                    let built = spec
+                    ws.buildBlockMesh("blockMesh") { try built.build() }
                 }
                 .buttonStyle(.borderedProminent)
             }
@@ -124,8 +125,8 @@ struct MeshGenerationPage: View {
             IntField(label: "Circumferential cells", value: $ogNt)
             NumberField(label: "Radial grading", value: $ogG)
             Button("Generate O-grid") {
-                do { ws.setMesh(try CylinderOGridSpec(radius: ogR, outerRadius: ogRo, radialCells: ogNr, circumferentialCells: ogNt, radialGrading: ogG).build(), source: "O-grid") }
-                catch { ws.log("\(error)", .error) }
+                let spec = CylinderOGridSpec(radius: ogR, outerRadius: ogRo, radialCells: ogNr, circumferentialCells: ogNt, radialGrading: ogG)
+                ws.buildBlockMesh("O-grid (blockMesh)") { try spec.build() }
             }
             .buttonStyle(.borderedProminent)
         }

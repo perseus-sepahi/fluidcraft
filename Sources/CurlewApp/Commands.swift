@@ -20,8 +20,8 @@ extension Workspace {
       /define/models/energy <yes|no>
       /define/boundary/type <zone> <type>    e.g. velocity-inlet, pressure-outlet, wall, symmetry
       /define/boundary/velocity <zone> <m/s> velocity magnitude (normal) at an inlet
-      /solve/initialize                      initialize with the current method
-      /solve/iterate <n>                     run n iterations (or time steps when transient)
+      /solve/initialize                      compute the initial fields (shown before the run)
+      /solve/iterate <n>                     run n iterations (or time steps) with OpenFOAM
       /solve/set/urf/<pressure|momentum|energy> <value>
       /report/forces [zone...]               pressure + viscous forces on walls
       /report/mass-flow                      mass flow through all open boundaries
@@ -32,10 +32,9 @@ extension Workspace {
       /surface/plane <name> <x|y|z> <value>  create a cut plane
       /display/set/surfaces <names...>       surfaces used by contours/vectors
       /plot/xy <field> x0 y0 z0 x1 y1 z1     XY plot along a line
-      /validate <keyword>                    run a validation benchmark (e.g. cavity, sod, ramp)
+      /validate <keyword>                    solve a validation benchmark with OpenFOAM (e.g. cavity, sod, ramp)
       /tutorial <id>                         \(TutorialCatalog.all.map(\.id).joined(separator: ", "))
       /show <page>                           open a task page (e.g. openfoam, boundary-conditions)
-      /define/backend <curlew|openfoam>      solver used by Calculate
       /openfoam/run | write | load | clean   run, write, load results of, or clean the OpenFOAM case
       /openfoam/set <key> <value>            application, turbulence, cores, dir, installation, writeFormat, initialFields
       /openfoam/paraview                     open the case in ParaView
@@ -185,7 +184,7 @@ extension Workspace {
                     DispatchQueue.main.async {
                         for r in rows {
                             self.validationResults.append(ValidationRow(name: r.benchmark, quantity: r.quantity, reference: r.reference, computed: r.computed, passed: r.passed))
-                            self.log("  \(r.passed ? "PASS" : "FAIL")  \(r.quantity): reference \(r.reference), Curlew \(r.computed)", r.passed ? .info : .warning)
+                            self.log("  \(r.passed ? "PASS" : "FAIL")  \(r.quantity): reference \(r.reference), OpenFOAM \(r.computed)", r.passed ? .info : .warning)
                         }
                     }
                 } catch { DispatchQueue.main.async { self.log("\(error)", .error) } }
@@ -205,10 +204,6 @@ extension Workspace {
                                       .surfaces, .graphicsMesh, .contours, .vectors, .pathlines, .xyPlot, .reports, .validation]
             if let item = all.first(where: { $0.title.lowercased().replacingOccurrences(of: " ", with: "-").hasPrefix(n) }) { selection = item }
             else { log("pages: " + all.map { $0.title.lowercased().replacingOccurrences(of: " ", with: "-") }.joined(separator: ", "), .warning) }
-        case "/define/backend":
-            guard let v = arg(0), let b = SolverBackend(rawValue: v.lowercased()) else { log("usage: /define/backend <curlew|openfoam>", .warning); return }
-            setup.general.backend = b
-            log("Calculate now uses \(b.displayName).")
         case "/openfoam/run":
             calculateWithOpenFOAM()
         case "/openfoam/write":

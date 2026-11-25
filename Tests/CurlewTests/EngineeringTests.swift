@@ -39,26 +39,21 @@ private func text(_ dir: URL, _ path: String) -> String {
         #expect(text(dir, "0/nut").contains("atmNutkWallFunction"))
     }
 
-    @Test func actuatorDiskThrust() throws {
-        // one disk in a uniform 8 m/s stream: the zone's momentum source integrates to the thrust
+    @Test(.enabled(if: hasOpenFOAM)) func actuatorDiskBecomesActuationDiskSource() throws {
         let mesh = try BlockMeshSpec(x: BlockAxis(from: 0, to: 10, cells: 20), y: BlockAxis(from: 0, to: 2, cells: 4), depth: 2,
                                      cellZones: [.init(name: "disk", kind: .fluid, box: [4.5, -1, -1, 5.5, 3, 3])]).build()
         var s = CaseSetup()
         s.models.viscous = .laminar
         s.adopt(mesh: mesh)
-        var d = ActuatorDisk(); d.diskArea = 4; d.referenceVelocity = 3; d.thrustCoefficient = 0.75
-        d.upstreamPoint = [2, 1, 1]     // the wind is sampled here, not taken from referenceVelocity
+        var d = ActuatorDisk(); d.diskArea = 4; d.thrustCoefficient = 0.75; d.powerCoefficient = 0.5
+        d.upstreamPoint = [2, 1, 1]
         s.cellZones["disk"]!.actuatorDisk = d
-        s.initialization.method = .standard
-        s.initialization.velocity = [.constant(8), 0, 0]
-        let solver = try PressureBasedSolver(mesh: mesh, setup: s)
-        try solver.initialize()
-        var F = Vec3(0, 0, 0)
-        let fd = solver.actuatorDiskForceDensity()
-        for c in 0..<mesh.nCells { if let f = fd[Int(mesh.cellZone[c])] { F = F + f * mesh.cellVolumes[c] } }
-        let rho = s.material(named: s.cellZones["disk"]!.material)!.density
-        #expect(abs(F.x + 0.5 * rho * 4 * 0.75 * 64) < 1e-9 * 0.5 * rho * 4 * 0.75 * 64)
-        #expect(abs(F.y) < 1e-12 && abs(F.z) < 1e-12)
+        let dir = scratch("disk")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        _ = try FoamCaseWriter.write(mesh: mesh, setup: s, to: dir)
+        let fv = text(dir, "system/fvOptions") + text(dir, "constant/fvOptions")
+        #expect(fv.contains("actuationDiskSource") && fv.contains("cellZone        disk"))
+        #expect(fv.contains("diskArea        4") && fv.contains("Ct              0.75") && fv.contains("(2 1 1)"))
     }
 
     @Test func radiationCase() throws {
@@ -104,23 +99,8 @@ private func text(_ dir: URL, _ path: String) -> String {
         return (mesh, s)
     }
 
-    @Test func orthotropicConductionInCurlew() throws {
-        let (mesh, s) = try slabs(leftK: [1, 50, 50])
-        let solver = try PressureBasedSolver(mesh: mesh, setup: s)
-        solver.log = { _ in }
-        try solver.initialize()
-        _ = solver.run { _, _ in }
-        var maxErr = 0.0
-        for c in 0..<mesh.nCells {
-            let x = mesh.cellCentres[c].x
-            maxErr = max(maxErr, abs(solver.state.T[c] - (x < 0.5 ? 400 - 160 * x : 320 - 40 * (x - 0.5))))
-        }
-        #expect(maxErr < 0.05, "max |T - exact| = \(maxErr)")
-    }
-
-    @Test func orthotropicSolidInOpenFOAM() throws {
+    @Test(.enabled(if: hasOpenFOAM)) func orthotropicSolidInOpenFOAM() throws {
         var (mesh, s) = try slabs(leftK: [1, 50, 50])
-        s.general.backend = .openfoam
         let dir = scratch("aniso")
         defer { try? FileManager.default.removeItem(at: dir) }
         _ = try FoamCaseWriter.write(mesh: mesh, setup: s, to: dir)
@@ -138,7 +118,7 @@ private func text(_ dir: URL, _ path: String) -> String {
         defer { try? FileManager.default.removeItem(atPath: s.openfoam.caseDirectory) }
         let out = try FoamSolve(mesh: mesh, setup: s).run(initial: nil, log: { _ in }, progress: { _, _, _, _ in })
         #expect(out.failure == nil, "\(out.failure ?? "")")
-        let sol = try #require(out.solver)
+        let sol = try #require(out.solution)
         var maxErr = 0.0
         for c in 0..<mesh.nCells {
             let x = mesh.cellCentres[c].x
@@ -162,7 +142,6 @@ private func text(_ dir: URL, _ path: String) -> String {
         #expect(Set(fluids) == Set(["air", "water_liquid"]) && solids == ["wall"], "\(fluids) \(solids)")
         let dir = scratch("2f")
         defer { try? FileManager.default.removeItem(at: dir) }
-        s.general.backend = .openfoam
         _ = try FoamCaseWriter.write(mesh: mesh, setup: s, to: dir)
         let rp = text(dir, "constant/regionProperties")
         #expect(rp.contains("air") && rp.contains("water_liquid") && rp.contains("wall"))

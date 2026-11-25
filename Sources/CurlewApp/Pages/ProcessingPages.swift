@@ -273,7 +273,7 @@ struct PostProcessingPage: View {
                 Button("Run Post-Processing Now (latest time)") { ws.runPostProcessingNow() }
                     .buttonStyle(.borderedProminent)
                     .disabled(ws.isRunning || ws.setup.openfoam.postProcessing.isEmpty)
-                Text("Runs <solver> -postProcess -latestTime with these function objects, then the exports, on \((ws.foamLastCase ?? ws.foamCaseDirectory).path). Curlew's own Results pages (contours, vectors, pathlines, XY plot, reports) work on the loaded solution as well.")
+                Text("Runs <solver> -postProcess -latestTime with these function objects, then the exports, on \((ws.foamLastCase ?? ws.foamCaseDirectory).path). Curlew's Results pages (contours, vectors, pathlines, XY plot, reports) work on the loaded solution as well.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

@@ -1,6 +1,5 @@
 import Foundation
 import CurlewMesh
-import CurlewLinear
 
 // MARK: - General
 
@@ -9,8 +8,6 @@ public enum TimeMode: String, Codable, CaseIterable, Sendable { case steady, tra
 
 public struct GeneralSettings: Codable, Sendable, Equatable {
     public var solver: SolverType = .pressureBased
-    /// The solver: an installed OpenFOAM (default, see `FoamSettings`) or Curlew's own solver.
-    public var backend: SolverBackend = .openfoam
     public var time: TimeMode = .steady
     public var gravityEnabled = false
     public var gravity: [Double] = [0, -9.81, 0]
@@ -137,8 +134,7 @@ public struct PorousSettings: Codable, Sendable, Equatable {
 
 /// Actuator disk (wind/tidal turbine rotor as a momentum sink): thrust T = ½ ρ A Ct U², power
 /// P = ½ ρ A Cp U³ with U the free-stream speed at `upstreamPoint` (OpenFOAM: actuationDiskSource,
-/// Froude variant). Curlew's own solver applies the thrust for `referenceVelocity` uniformly
-/// over the zone.
+/// Froude variant), spread over the zone.
 public struct ActuatorDisk: Codable, Sendable, Equatable {
     public var direction: [Double] = [1, 0, 0]
     public var thrustCoefficient = 0.75
@@ -308,9 +304,6 @@ public enum GradientScheme: String, Codable, CaseIterable, Sendable {
     case leastSquares = "least-squares-cell-based"
     case greenGauss = "green-gauss-cell-based"
 }
-public enum PressureInterpolation: String, Codable, CaseIterable, Sendable {
-    case standard, secondOrder = "second-order", bodyForceWeighted = "body-force-weighted", linear
-}
 public enum ConvectionScheme: String, Codable, CaseIterable, Sendable {
     case firstOrderUpwind = "first-order-upwind"
     case secondOrderUpwind = "second-order-upwind"
@@ -338,7 +331,6 @@ public enum TransientFormulation: String, Codable, CaseIterable, Sendable {
 public struct SolutionMethods: Codable, Sendable, Equatable {
     public var coupling: PVCoupling = .simple
     public var gradient: GradientScheme = .leastSquares
-    public var pressure: PressureInterpolation = .secondOrder
     public var momentum: ConvectionScheme = .secondOrderUpwind
     /// Fluent's default for k/omega/epsilon is first-order upwind.
     public var turbulence: ConvectionScheme = .firstOrderUpwind
@@ -350,20 +342,10 @@ public struct SolutionMethods: Codable, Sendable, Equatable {
     /// Limit higher-order face values (momentum, energy) to the range of the two adjacent cells:
     /// keeps temperatures bounded and improves convergence on coarse meshes.
     public var limitMomentum = true
-    /// Include the transpose part of the viscous stress, div(mu_eff (grad u)^T), for turbulent
-    /// viscosity. It changes typical RANS results by well under 1 % but slows convergence of
-    /// separated flows; it is always included for variable molecular viscosity.
-    public var transposeStress = false
     /// Non-orthogonal correction limiter psi (OpenFOAM "limited corrected"): the explicit
     /// correction is capped at psi/(1-psi) times the orthogonal part. 1 = fully corrected,
     /// 0 = uncorrected; nil = automatic from the mesh's maximum non-orthogonality.
     public var nonOrthogonalLimit: Double? = nil
-    /// Pressure force from a conservative (skewness-corrected Green–Gauss) gradient when the
-    /// gradient scheme is least squares, so the pressure force on any region equals the
-    /// pressure integral over its boundary. Off reproduces the plain least-squares source.
-    public var conservativePressureGradient = true
-    /// PISO neighbour corrections.
-    public var pisoCorrectors = 1
     // Density-based
     public var flux: FluxScheme = .roe
     public var courantNumber = 1.0
@@ -397,21 +379,9 @@ public struct SolutionLimits: Codable, Sendable, Equatable {
     public init() {}
 }
 
-public struct LinearControls: Codable, Sendable, Equatable {
-    public var pressure = LinearSolverSettings.pressure
-    public var momentum = LinearSolverSettings.transport
-    public var turbulence = LinearSolverSettings.transport
-    public var energy = LinearSolverSettings(method: .amgBiCGStab, cycle: .v, relTol: 0.05, maxIterations: 50)
-    public var scalars = LinearSolverSettings.transport
-    /// Use the Metal GPU linear-solver backend when available.
-    public var useGPU = false
-    public init() {}
-}
-
 public struct SolutionControls: Codable, Sendable, Equatable {
     public var urf = UnderRelaxation()
     public var limits = SolutionLimits()
-    public var linear = LinearControls()
     public init() {}
 }
 
@@ -557,7 +527,7 @@ public struct CaseSetup: Codable, Sendable, Equatable {
     public var initialization = InitializationSettings()
     public var run = RunSettings()
     public var expressions: [NamedExpression] = []
-    /// OpenFOAM backend settings (used when `general.backend == .openfoam`).
+    /// OpenFOAM settings: the solver application and everything written into the case.
     public var openfoam = FoamSettings()
     public init() {}
 

@@ -251,3 +251,21 @@ public final class BoundaryData: @unchecked Sendable {
         }
     }
 }
+
+/// Spalart–Allmaras relation between ν̃ and νt, for inlet values of ν̃ from a viscosity ratio.
+enum SA {
+    static let cv1 = 7.1
+    static func fv1(_ chi: Double) -> Double { let c3 = chi * chi * chi; return c3 / (c3 + cv1 * cv1 * cv1) }
+    /// ν̃ such that ν̃ fv1(ν̃/ν) = νt.
+    static func nuTildeFor(nuT: Double, nu: Double) -> Double {
+        var chi = max(nuT / nu, 1e-6)
+        for _ in 0..<50 {
+            let f = chi * fv1(chi) - nuT / nu
+            let h = 1e-6 * max(chi, 1)
+            let df = ((chi + h) * fv1(chi + h) - chi * fv1(chi)) / h
+            chi = max(chi - f / max(df, 1e-12), 1e-12)
+            if abs(f) < 1e-12 * max(nuT / nu, 1) { break }
+        }
+        return chi * nu
+    }
+}

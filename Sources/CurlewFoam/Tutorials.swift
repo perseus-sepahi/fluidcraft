@@ -1,5 +1,6 @@
 import Foundation
 import CurlewMesh
+import CurlewSolver
 
 /// Ready-to-run cases: mesh + setup + what to look at.
 public struct Tutorial: Sendable, Identifiable {
@@ -79,7 +80,7 @@ public enum TutorialCatalog {
                  summary: "Gmsh tetrahedral pipe; developing flow and pressure drop vs Hagen-Poiseuille.",
                  needsGmsh: true, suggestedField: "velocity-magnitude") { try pipe() },
         Tutorial(id: "turbulent-pipe", title: "Turbulent Pipe with Prism Layers (k-ω SST, Re = 20 000)",
-                 summary: "3D boundary-layer meshing: 14 prism layers sized for y⁺ ≈ 1 under a tetrahedral core. Compare the friction factor with Petukhov's correlation (0.0262).",
+                 summary: "3D boundary-layer meshing: Gmsh tetrahedra with 14 prism layers added by snappyHexMesh, sized for y⁺ ≈ 1. Compare the friction factor with Petukhov's correlation (0.0262).",
                  needsGmsh: true, suggestedField: "y-plus") {
             let pc = try Benchmarks.turbulentPipeCase()
             var s = pc.setup
@@ -165,7 +166,6 @@ public enum TutorialCatalog {
         var inlet = BoundarySettings(type: .velocityInlet); inlet.velocityMagnitude = 0.5
         s.boundaries["inlet"] = inlet
         s.methods.coupling = .simplec; s.controls.urf.pressure = 1
-        s.methods.pressure = .standard   // momentum-weighted interpolation: clean porous interfaces
         s.run.iterations = 1000
         return (mesh, s)
     }

@@ -3,7 +3,7 @@ import CurlewMesh
 
 /// Named solution quantities (Fluent field-function names) on cells and boundary faces.
 public enum FieldCatalog {
-    public static func available(for s: PressureBasedSolver) -> [String] {
+    public static func available(for s: Solution) -> [String] {
         var out = ["pressure", "total-pressure", "pressure-coefficient", "velocity-magnitude", "x-velocity", "y-velocity", "z-velocity",
                    "vorticity-magnitude", "strain-rate", "q-criterion", "density", "viscosity", "cell-volume", "orthogonal-quality"]
         if s.setup.models.energy || s.zoneMaterial.contains(where: { $0.densityMethod != .constant }) {
@@ -14,7 +14,6 @@ public enum FieldCatalog {
             if s.setup.models.viscous.usesOmega { out.append("specific-dissipation-rate") }
             if s.setup.models.viscous.usesEpsilon { out.append("turbulent-dissipation-rate") }
             if s.setup.models.viscous == .spalartAllmaras { out.append("modified-turbulent-viscosity") }
-            out.append("wall-distance")
         }
         out += ["wall-shear-stress", "skin-friction-coefficient", "y-plus"]
         if s.isDensityBased || s.zoneMaterial.contains(where: { $0.densityMethod == .idealGas }) {
@@ -27,7 +26,7 @@ public enum FieldCatalog {
     }
 
     /// Cell values of a named field, or nil if unknown.
-    public static func cellValues(_ name: String, _ s: PressureBasedSolver) -> [Double]? {
+    public static func cellValues(_ name: String, _ s: Solution) -> [Double]? {
         let st = s.state
         let n = s.mesh.nCells
         let ref = s.setup.reference
@@ -58,7 +57,6 @@ public enum FieldCatalog {
             let g = s.gasGamma, R = s.gasR
             return (0..<n).map { norm(st.u[$0]) / sqrt(g * R * max(st.T[$0], 1e-6)) }
         case "orthogonal-quality": return MeshQuality.orthogonalQuality(s.mesh)
-        case "wall-distance": return s.geo.wallDistance.isEmpty ? nil : s.geo.wallDistance
         case "vorticity-magnitude", "strain-rate", "q-criterion":
             guard s.gradU[0].count == n else { return [Double](repeating: 0, count: n) }
             return (0..<n).map { c in
@@ -87,7 +85,7 @@ public enum FieldCatalog {
     }
 
     /// Values on every boundary face (index face - nInternal).
-    public static func boundaryValues(_ name: String, _ s: PressureBasedSolver) -> [Double]? {
+    public static func boundaryValues(_ name: String, _ s: Solution) -> [Double]? {
         let st = s.state
         let ref = s.setup.reference
         let nI = s.mesh.nInternalFaces

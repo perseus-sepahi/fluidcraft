@@ -3,13 +3,13 @@ import CurlewMesh
 
 /// Surface, volume and force report evaluation (Fluent report definitions).
 public enum Reports {
-    public static func zoneFaces(_ zones: [String], _ s: PressureBasedSolver) -> [Int] {
+    public static func zoneFaces(_ zones: [String], _ s: Solution) -> [Int] {
         let m = s.mesh
         let selected = zones.isEmpty ? m.boundaryZones.filter { $0.kind != .empty } : m.boundaryZones.filter { zones.contains($0.name) }
         return selected.flatMap { Array($0.faceRange) }
     }
 
-    public static func evaluate(_ r: ReportDefinition, solver s: PressureBasedSolver) -> Double {
+    public static func evaluate(_ r: ReportDefinition, solver s: Solution) -> Double {
         let m = s.mesh
         let nI = m.nInternalFaces
         let st = s.state
@@ -68,7 +68,7 @@ public enum Reports {
     public struct ForceSplit: Sendable { public var pressure: Vec3; public var viscous: Vec3 }
 
     /// Pressure and viscous force exerted by the fluid on wall zones, and the total moment about `centre`.
-    public static func forces(_ zones: [String], _ s: PressureBasedSolver, centre: Vec3 = .zero) -> (ForceSplit, Vec3) {
+    public static func forces(_ zones: [String], _ s: Solution, centre: Vec3 = .zero) -> (ForceSplit, Vec3) {
         let m = s.mesh
         let nI = m.nInternalFaces
         let pref = s.setup.reference.pressure

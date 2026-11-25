@@ -185,14 +185,13 @@ private func cubeSurface() -> TriSurface {
                         "customStages": [ { "command": "postProcess -func Q" } ] } }
         """
         let s = try CaseSetup.decodeLenient(Data(json.utf8))
-        #expect(s.general.backend == .openfoam)
         #expect(s.openfoam.cores == 4 && s.openfoam.application == .pimpleFoam)
         #expect(s.openfoam.schemes.divU == "Gauss linear" && s.openfoam.schemes.wallDistance == "meshWave")
         #expect(s.openfoam.patchOverrides.first?.field == "U")
         #expect(s.openfoam.customStages.first?.phase == .afterSolve)
         // old case files without the new keys still decode
         let old = try CaseSetup.decodeLenient(Data("{ \"title\": \"x\" }".utf8))
-        #expect(old.general.backend == .openfoam && old.openfoam == FoamSettings())   // OpenFOAM is the default solver
+        #expect(old.openfoam == FoamSettings())
     }
 }
 
@@ -266,13 +265,14 @@ private func cubeSurface() -> TriSurface {
         #expect(r.liveReports.map(\.key) == ["drag/Cd", "p_avg/areaAverage(p)"])
     }
 
-    @Test func resultsRoundTrip() throws {
-        // A "result" written in Curlew's own format must load back exactly (unit conversions included).
-        let (mesh, setup) = try Benchmarks.cavityCase(re: 100, cells: 8)
-        let solver = try PressureBasedSolver(mesh: mesh, setup: setup)
-        solver.log = { _ in }
-        try solver.initialize()
-        _ = solver.run(iterations: 30)
+    @Test(.enabled(if: hasOpenFOAM)) func resultsRoundTrip() throws {
+        // Fields written by Curlew must load back exactly (unit conversions included).
+        var (mesh, setup) = try Benchmarks.cavityCase(re: 100, cells: 8)
+        setup.initialization.method = .standard
+        setup.initialization.velocity = [.expression("x*y"), .expression("x-y"), 0]
+        setup.initialization.gaugePressure = .expression("3*x + y")
+        let solver = try Solution(mesh: mesh, setup: setup)
+        solver.loadInitialFields()
         let dir = tempDir("res")
         defer { try? FileManager.default.removeItem(at: dir) }
         try FoamCaseWriter.write(mesh: mesh, setup: setup, to: dir, initial: solver.state)
@@ -294,14 +294,13 @@ private func cubeSurface() -> TriSurface {
     @Test(.enabled(if: !FoamDiscovery.discover().isEmpty))
     func cavityMatchesGhia() throws {
         var (mesh, setup) = try Benchmarks.cavityCase(re: 100, cells: 32)
-        setup.general.backend = .openfoam
         setup.openfoam.caseDirectory = tempDir("it-cavity").path
         setup.openfoam.initialFields = .uniform
         setup.run.iterations = 2000
         defer { try? FileManager.default.removeItem(atPath: setup.openfoam.caseDirectory) }
         let out = try FoamSolve(mesh: mesh, setup: setup).run(initial: nil, log: { _ in }, progress: { _, _, _, _ in })
         #expect(out.failure == nil)
-        let solver = try #require(out.solver)
+        let solver = try #require(out.solution)
         #expect(!out.residuals.iterations.isEmpty)
         for c in Benchmarks.compareCavity(solver, re: 100) { #expect(c.maxAbsError < 0.03, "\(c.quantity)") }
         // phi was read back: no net flux through the closed cavity's faces of any cell
@@ -338,7 +337,6 @@ private func cubeSurface() -> TriSurface {
         s.initialization.method = .standard
         s.initialization.temperature = 350
         s.run.iterations = 400
-        s.general.backend = .openfoam
         s.openfoam.initialFields = .uniform
         s.openfoam.residualEnergy = 1e-10
         s.openfoam.caseDirectory = tempDir("cht").path
@@ -350,7 +348,7 @@ private func cubeSurface() -> TriSurface {
         let out = try FoamSolve(mesh: mesh, setup: s).run(initial: nil, log: { _ in }, progress: { _, _, _, _ in })
         #expect(out.failure == nil, "\(out.failure ?? "")")
         #expect(out.report.isMultiRegion)
-        let solver = try #require(out.solver)
+        let solver = try #require(out.solution)
         var maxErr = 0.0
         for c in 0..<mesh.nCells {
             let x = mesh.cellCentres[c].x
@@ -404,21 +402,20 @@ private func cubeSurface() -> TriSurface {
         ], cellZones: zones).build()
     }
 
-    func runFoam(_ mesh: Mesh, _ setup: CaseSetup, tag: String) throws -> (PressureBasedSolver, FoamSolve.Outcome) {
+    func runFoam(_ mesh: Mesh, _ setup: CaseSetup, tag: String) throws -> (Solution, FoamSolve.Outcome) {
         var s = setup
-        s.general.backend = .openfoam
         s.openfoam.caseDirectory = "/tmp/curlew-test-\(tag)"
         try? FileManager.default.removeItem(atPath: s.openfoam.caseDirectory)
         if s.openfoam.initialFields == .curlew { s.openfoam.initialFields = .uniform }
         var lines: [String] = []
         let out = try FoamSolve(mesh: mesh, setup: s).run(initial: nil, log: { lines.append($0) }, progress: { _, _, _, _ in })
         #expect(out.failure == nil, "\(tag): \(out.failure ?? "")")
-        if out.failure != nil || out.solver == nil { print("LOG \(tag): \(out.failure ?? "")\n" + lines.suffix(25).joined(separator: "\n")) }
+        if out.failure != nil || out.solution == nil { print("LOG \(tag): \(out.failure ?? "")\n" + lines.suffix(25).joined(separator: "\n")) }
         else { try? FileManager.default.removeItem(atPath: s.openfoam.caseDirectory) }   // kept for inspection on failure
-        return (try #require(out.solver), out)
+        return (try #require(out.solution), out)
     }
 
-    func report(_ kind: ReportKind, _ zones: [String], field: String = "pressure", _ s: PressureBasedSolver) -> Double {
+    func report(_ kind: ReportKind, _ zones: [String], field: String = "pressure", _ s: Solution) -> Double {
         var r = ReportDefinition(name: "r", kind: kind); r.zones = zones; r.field = field
         return Reports.evaluate(r, solver: s)
     }
@@ -524,19 +521,17 @@ private func cubeSurface() -> TriSurface {
         s.initialization.method = .standard
         s.run.iterations = 2000
         s.residuals.continuity = 1e-9; s.residuals.velocity = 1e-9
-        let curlew = try solve(mesh, s, iterations: 2000)
         let (foam, out) = try runFoam(mesh, s, tag: "mrf")
         #expect(out.report.files.contains("constant/MRFProperties"))
         let A = -0.25 / 3.75, B = 0.25 * 4 / 3.75
         let z = mesh.bounds.centre.z
         let rs = [0.75, 1.25, 1.6]
         let pts = rs.map { Vec3($0 * cos(0.3), $0 * sin(0.3), z) }
-        let uc = curlew.sample("velocity-magnitude", at: pts), uf = foam.sample("velocity-magnitude", at: pts)
+        let uf = foam.sample("velocity-magnitude", at: pts)
         for (i, r) in rs.enumerated() {
             let exact = A * r + B / r
-            print(String(format: "MRF r=%.2f exact %.5f Curlew %.5f OpenFOAM %.5f", r, exact, uc[i], uf[i]))
+            print(String(format: "MRF r=%.2f exact %.5f OpenFOAM %.5f", r, exact, uf[i]))
             #expect(abs(uf[i] - exact) / exact < 0.03, "OpenFOAM at r = \(r)")
-            #expect(abs(uc[i] - exact) / exact < 0.03, "Curlew at r = \(r)")
         }
     }
 

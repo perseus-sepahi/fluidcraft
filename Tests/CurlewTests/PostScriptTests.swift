@@ -40,14 +40,13 @@ import Foundation
         s.boundaries["outlet"] = BoundarySettings(type: .pressureOutlet)
         s.initialization.method = .standard; s.initialization.velocity = [.constant(0.05), 0, 0]
         s.run.iterations = 400
-        s.general.backend = .openfoam
         s.openfoam.initialFields = .uniform; s.openfoam.checkMesh = false
         s.openfoam.caseDirectory = "/tmp/curlew-test-postscript"
         try? FileManager.default.removeItem(atPath: s.openfoam.caseDirectory)
         let out = try FoamSolve(mesh: mesh, setup: s).run(initial: nil, log: { _ in }, progress: { _, _, _, _ in })
         #expect(out.failure == nil, "\(out.failure ?? "")")
         let dir = URL(fileURLWithPath: s.openfoam.caseDirectory)
-        let sol = try #require(out.solver)
+        let sol = try #require(out.solution)
         let rho = FoamCaseWriter.fluidMaterial(s)?.density ?? 1.225
 
         var results: [String: PostScriptResult] = [:]

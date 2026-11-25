@@ -1,6 +1,5 @@
 import SwiftUI
 import CurlewMesh
-import CurlewLinear
 import CurlewSolver
 import CurlewFoam
 
@@ -12,28 +11,20 @@ struct MethodsPage: View {
                 Picker("Scheme", selection: $ws.setup.methods.coupling) {
                     ForEach(PVCoupling.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
-                if ws.setup.methods.coupling == .piso {
-                    Stepper("Neighbour corrections: \(ws.setup.methods.pisoCorrectors)", value: $ws.setup.methods.pisoCorrectors, in: 1...4)
-                }
+                Text("SIMPLE / SIMPLEC become simpleFoam's SIMPLE (consistent yes for SIMPLEC); transient cases use PIMPLE. Corrector counts are on the OpenFOAM page › Solution Algorithm.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Spatial Discretization") {
                 Picker("Gradient", selection: $ws.setup.methods.gradient) {
                     Text("Least Squares Cell Based").tag(GradientScheme.leastSquares)
                     Text("Green-Gauss Cell Based").tag(GradientScheme.greenGauss)
                 }
-                Picker("Pressure", selection: $ws.setup.methods.pressure) {
-                    Text("Standard").tag(PressureInterpolation.standard)
-                    Text("Second Order").tag(PressureInterpolation.secondOrder)
-                    Text("Body Force Weighted").tag(PressureInterpolation.bodyForceWeighted)
-                }
                 schemePicker("Momentum", $ws.setup.methods.momentum)
                 if ws.setup.models.viscous.isTurbulent { schemePicker(ws.setup.models.viscous == .spalartAllmaras ? "Modified Turbulent Viscosity" : "Turbulence", $ws.setup.methods.turbulence) }
                 if ws.setup.models.energy { schemePicker("Energy", $ws.setup.methods.energy) }
                 if !ws.setup.models.passiveScalars.isEmpty { schemePicker("User Scalars", $ws.setup.methods.scalars) }
-                Toggle("Bounded (TVD) higher-order momentum & energy", isOn: $ws.setup.methods.limitMomentum)
-                if ws.setup.models.viscous.isTurbulent {
-                    Toggle("Transpose turbulent stress term", isOn: $ws.setup.methods.transposeStress)
-                }
+                Toggle("Limited velocity gradient (cellLimited)", isOn: $ws.setup.methods.limitMomentum)
+                Text("These choose the fvSchemes entries; any entry can be overridden on the OpenFOAM page › Schemes.").font(.caption).foregroundStyle(.secondary)
             }
             if ws.setup.general.time == .transient {
                 Section("Transient Formulation") {
@@ -57,30 +48,14 @@ struct ControlsPage: View {
         Form {
             Section("Under-Relaxation Factors") {
                 NumberField(label: "Pressure", value: $ws.setup.controls.urf.pressure)
-                NumberField(label: "Density", value: $ws.setup.controls.urf.density)
-                NumberField(label: "Body Forces", value: $ws.setup.controls.urf.bodyForces)
                 NumberField(label: "Momentum", value: $ws.setup.controls.urf.momentum)
                 if ws.setup.models.viscous.isTurbulent {
-                    if ws.setup.models.viscous == .spalartAllmaras {
-                        NumberField(label: "Modified Turbulent Viscosity", value: $ws.setup.controls.urf.modifiedTurbulentViscosity)
-                    } else {
-                        NumberField(label: "Turbulent Kinetic Energy", value: $ws.setup.controls.urf.turbulentKineticEnergy)
-                        if ws.setup.models.viscous.usesOmega { NumberField(label: "Specific Dissipation Rate", value: $ws.setup.controls.urf.specificDissipationRate) }
-                        else { NumberField(label: "Turbulent Dissipation Rate", value: $ws.setup.controls.urf.dissipationRate) }
-                    }
-                    NumberField(label: "Turbulent Viscosity", value: $ws.setup.controls.urf.turbulentViscosity)
+                    NumberField(label: "Turbulence", value: $ws.setup.controls.urf.turbulentKineticEnergy)
                 }
                 if ws.setup.models.energy { NumberField(label: "Energy", value: $ws.setup.controls.urf.energy) }
-                if ws.setup.methods.coupling != .simple {
-                    Text("SIMPLEC/PISO apply the full pressure correction (pressure factor treated as 1).").font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            Section("Linear Solvers (AMG)") {
-                linear("Pressure", $ws.setup.controls.linear.pressure)
-                linear("Momentum", $ws.setup.controls.linear.momentum)
-                if ws.setup.models.viscous.isTurbulent { linear("Turbulence", $ws.setup.controls.linear.turbulence) }
-                if ws.setup.models.energy { linear("Energy", $ws.setup.controls.linear.energy) }
-                Toggle("Metal GPU acceleration for pressure (mixed precision)", isOn: $ws.setup.controls.linear.useGPU)
+                if !ws.setup.models.passiveScalars.isEmpty { NumberField(label: "User scalars", value: $ws.setup.controls.urf.scalars) }
+                Text("Written as fvSolution relaxationFactors. With SIMPLEC (consistent) OpenFOAM uses pressure 1 and momentum ≥ 0.9. Linear solvers and tolerances are on the OpenFOAM page.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Limits") {
                 NumberField(label: "Minimum absolute temperature", value: $ws.setup.controls.limits.minimumTemperature, unit: "K")
@@ -90,19 +65,6 @@ struct ControlsPage: View {
             }
         }
         .formStyle(.grouped)
-    }
-    func linear(_ label: String, _ b: Binding<LinearSolverSettings>) -> some View {
-        DisclosureGroup(label) {
-            Picker("Method", selection: b.method) {
-                Text("AMG-preconditioned flexible CG").tag(LinearMethod.amgCG)
-                Text("AMG-preconditioned BiCGStab").tag(LinearMethod.amgBiCGStab)
-                Text("AMG cycles").tag(LinearMethod.amg)
-                Text("Gauss-Seidel").tag(LinearMethod.gaussSeidel)
-            }
-            Picker("Cycle", selection: b.cycle) { ForEach(AMGCycle.allCases, id: \.self) { Text($0.rawValue + "-cycle").tag($0) } }
-            NumberField(label: "Termination criterion", value: b.relTol)
-            IntField(label: "Max cycles", value: b.maxIterations)
-        }
     }
 }
 
@@ -215,7 +177,7 @@ struct InitializationPage: View {
                 }
                 .pickerStyle(.radioGroup)
                 if ws.setup.initialization.method == .hybrid {
-                    Text("Solves Laplace equations for a potential-flow velocity field and pressure; temperature and turbulence take averaged inlet values.")
+                    Text("OpenFOAM's potentialFoam computes a potential-flow velocity field as the first stage of the calculation (incompressible cases with an inlet); temperature and turbulence take averaged inlet values. Velocity patches are replaced by the potential flow.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -258,7 +220,9 @@ struct InitializationPage: View {
                 } label: { Label("Initialize", systemImage: "sparkles") }
                 .controlSize(.large)
                 .disabled(ws.mesh == nil || ws.isRunning)
-                if ws.initialized { Label("Solution initialized", systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
+                if ws.initialized && !ws.hasResults { Label("Initial fields computed — shown in the Results pages", systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
+                Text("Initialize previews the fields OpenFOAM will start from; Calculate computes them again and writes them as the case's 0/ fields, so this step is optional.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -291,17 +255,15 @@ struct RunCalculationPage: View {
     @Bindable var ws: Workspace
     var body: some View {
         Form {
-            Section("Backend") {
-                Picker("Solve with", selection: $ws.setup.general.backend) {
-                    ForEach(SolverBackend.allCases, id: \.self) { Text($0.displayName).tag($0) }
+            Section("OpenFOAM") {
+                let app = FoamCaseWriter.resolvedApplication(ws.setup)
+                LabeledContent("Application", value: "\(app.rawValue) on \(ws.setup.openfoam.cores) core\(ws.setup.openfoam.cores == 1 ? "" : "s")")
+                Text("Case: \(ws.foamCaseDirectory.path)").font(.caption).foregroundStyle(.secondary)
+                if ws.foamInstallations.isEmpty {
+                    Label("No OpenFOAM installation found yet (OpenFOAM page › Installation). Install OpenFOAM for macOS from openfoam.com to calculate.", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange).font(.caption)
                 }
-                .pickerStyle(.segmented)
-                if ws.setup.general.backend == .openfoam {
-                    let app = FoamCaseWriter.resolvedApplication(ws.setup)
-                    LabeledContent("Application", value: "\(app.rawValue) on \(ws.setup.openfoam.cores) core\(ws.setup.openfoam.cores == 1 ? "" : "s")")
-                    Text("Case: \(ws.foamCaseDirectory.path)").font(.caption).foregroundStyle(.secondary)
-                    Button("OpenFOAM settings…") { ws.selection = .openfoam }.buttonStyle(.link)
-                }
+                Button("OpenFOAM settings…") { ws.selection = .openfoam }.buttonStyle(.link)
             }
             if ws.setup.general.time == .steady {
                 Section("Steady") {
@@ -330,7 +292,6 @@ struct RunCalculationPage: View {
                     }
                 }
                 LabeledContent("Iterations so far", value: "\(ws.currentIteration)")
-                if !ws.initialized && ws.setup.general.backend == .curlew { Text("The solution will be initialized first.").font(.caption).foregroundStyle(.secondary) }
             }
         }
         .formStyle(.grouped)

@@ -1,23 +1,6 @@
 import Foundation
 import CurlewMesh
 
-// MARK: - Backend
-
-/// Which code solves the case. Curlew's own finite-volume solver, or an installed OpenFOAM
-/// driven by Curlew: the case is written from the same setup, run stage by stage, and the
-/// results are read back so every Results page works on either.
-public enum SolverBackend: String, Codable, CaseIterable, Sendable {
-    case curlew
-    case openfoam
-
-    public var displayName: String {
-        switch self {
-        case .curlew: return "Curlew (built-in)"
-        case .openfoam: return "OpenFOAM"
-        }
-    }
-}
-
 // MARK: - Application
 
 /// OpenFOAM (ESI, v2xxx) solver applications Curlew can set up.
@@ -79,7 +62,7 @@ public enum FoamApplication: String, Codable, CaseIterable, Sendable {
 // MARK: - Turbulence
 
 /// Turbulence closures available in OpenFOAM. `fromCurlew` uses the Models page; the rest
-/// add the RAS variants, LES and DES models Curlew's own solver does not have.
+/// add RAS variants, LES and DES models beyond Curlew's Models page.
 public enum FoamTurbulenceModel: String, Codable, CaseIterable, Sendable {
     case fromCurlew
     case laminar
@@ -191,9 +174,9 @@ public enum FoamWallTreatment: String, Codable, CaseIterable, Sendable {
 
 /// Where the initial (0/) fields come from.
 public enum FoamInitialFields: String, Codable, CaseIterable, Sendable {
-    /// Curlew runs its own Initialization (hybrid or standard, with patches) and the resulting
-    /// cell fields are written as nonuniform internal fields; an existing Curlew solution is
-    /// written instead when there is one, so OpenFOAM continues from it.
+    /// The Initialization page decides: standard initialization (values, expressions, patches)
+    /// is written as nonuniform internal fields; hybrid runs potentialFoam on uniform fields.
+    /// A loaded solution is written instead when there is one, so OpenFOAM continues from it.
     case curlew
     /// Uniform internal fields from the Initialization page's standard values.
     case uniform
@@ -202,7 +185,7 @@ public enum FoamInitialFields: String, Codable, CaseIterable, Sendable {
 
     public var displayName: String {
         switch self {
-        case .curlew: return "Curlew initialization (or current solution)"
+        case .curlew: return "Initialization page (or current solution)"
         case .uniform: return "Uniform standard values"
         case .potentialFoam: return "potentialFoam"
         }
@@ -553,7 +536,7 @@ public struct FoamRadiation: Codable, Sendable, Equatable {
 
 // MARK: - Settings
 
-/// Everything the OpenFOAM backend needs beyond the shared Curlew setup. Every field has a
+/// Everything OpenFOAM needs beyond the shared Curlew setup. Every field has a
 /// default that reproduces the Curlew setup as closely as OpenFOAM allows; the rest of the
 /// knobs are what an OpenFOAM user edits in `system/` and `constant/` by hand.
 public struct FoamSettings: Codable, Sendable, Equatable {
@@ -615,7 +598,7 @@ public struct FoamSettings: Codable, Sendable, Equatable {
     /// PIMPLE outer-loop convergence (0 = fixed nOuterCorrectors).
     public var outerResidual = 0.0
 
-    /// Thermal radiation (OpenFOAM backend).
+    /// Thermal radiation.
     public var radiation = FoamRadiation()
 
     // Parallel

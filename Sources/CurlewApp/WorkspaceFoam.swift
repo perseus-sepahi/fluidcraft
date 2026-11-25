@@ -5,7 +5,7 @@ import CurlewSolver
 import CurlewPost
 import CurlewFoam
 
-/// OpenFOAM backend: running cases in an installed OpenFOAM, loading the results back, and
+/// OpenFOAM: running cases in an installed OpenFOAM, loading the results back, and
 /// meshing CAD with snappyHexMesh.
 extension Workspace {
 
@@ -82,27 +82,25 @@ extension Workspace {
         statusText = "OpenFOAM: preparing…"
         var s = setup
         s.adopt(mesh: mesh)
-        let current = (initialized ? solver : nil)
+        // continue from loaded results when the setup says so; otherwise the case's own initialization
+        let current = (hasResults && initialized) ? solver : nil
         let startResiduals = residuals, startReports = reportHistory
         let interval = setup.run.reportingInterval
         log("Calculating with OpenFOAM (\(FoamCaseWriter.resolvedApplication(s).rawValue))…", .command)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
-            // Initial fields: the current Curlew solution, or Curlew's own initialization.
             var initial: FlowState? = nil
             if s.openfoam.initialFields == .curlew && !s.openfoam.continueFromLatestTime {
                 if let cur = current {
                     initial = cur.state
-                    DispatchQueue.main.async { self.log("Initial fields: current Curlew solution (iteration \(cur.iteration)).") }
+                    DispatchQueue.main.async { self.log("Initial fields: the current solution (iteration \(cur.iteration)).") }
                 } else {
                     do {
-                        let starter = try PressureBasedSolver(mesh: mesh, setup: s)
-                        starter.log = { _ in }
-                        try starter.initialize()
-                        initial = starter.state
-                        DispatchQueue.main.async { self.log("Initial fields: Curlew \(s.initialization.method.rawValue) initialization.") }
+                        initial = try FoamSolve.initialFields(mesh: mesh, setup: s)
+                        let how = initial != nil ? "Curlew's standard initialization" : (FoamCaseWriter.runsPotentialFoam(s, app: FoamCaseWriter.resolvedApplication(s), mesh: mesh, initial: nil) ? "uniform values, then potentialFoam" : "uniform values")
+                        DispatchQueue.main.async { self.log("Initial fields: \(how).") }
                     } catch {
-                        DispatchQueue.main.async { self.log("Curlew initialization failed (\(error)); OpenFOAM starts from uniform fields.", .warning) }
+                        DispatchQueue.main.async { self.log("Initialization failed (\(error)); OpenFOAM starts from uniform fields.", .warning) }
                     }
                 }
             }
@@ -140,7 +138,7 @@ extension Workspace {
         reportHistory = out.reports
         if let f = out.failure { log(f, f.contains("cancelled") ? .warning : .error) }
         else { log(String(format: "OpenFOAM finished in %.1f s (%@).", out.seconds, out.report.application.rawValue)) }
-        if let s = out.solver {
+        if let s = out.solution {
             adoptExternalSolver(s)
             for rep in setup.reports {
                 log(String(format: "  %@ = %.8g", rep.name, Reports.evaluate(rep, solver: s)))
@@ -152,12 +150,13 @@ extension Workspace {
         isDirty = true
     }
 
-    /// Make a solver holding external fields the current solution.
-    private func adoptExternalSolver(_ s: PressureBasedSolver) {
+    /// Make OpenFOAM results the current solution.
+    private func adoptExternalSolver(_ s: Solution) {
         s.log = { [weak self] msg in DispatchQueue.main.async { self?.log(msg) } }
         solver = s
         post = PostProcessor(solver: s)
         initialized = true
+        hasResults = true
         currentIteration = s.iteration
         flowTime = s.state.time
         if display.mode == .mesh { display.mode = .contours }
@@ -173,7 +172,8 @@ extension Workspace {
             try FoamLocations.validate(dir)
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             FoamCasePreparation.clean(dir)
-            let initial = (initialized && setup.openfoam.initialFields == .curlew) ? solver?.state : nil
+            let initial = setup.openfoam.initialFields == .curlew
+                ? ((hasResults && initialized) ? solver?.state : try FoamSolve.initialFields(mesh: mesh, setup: setup)) : nil
             let r = try FoamCaseWriter.write(mesh: mesh, setup: setup, to: dir, initial: initial)
             for w in r.warnings { log(w, .warning) }
             foamLastCase = dir

@@ -6,7 +6,7 @@ import CurlewFoam
 
 /// "Import CAD for Analysis": pick a CAD file (or a built-in sample) and an analysis type;
 /// Curlew meshes it and sets up materials, boundary conditions, turbulence model, reference
-/// values and reports, ready for either backend.
+/// values and reports, ready for OpenFOAM.
 struct CADAnalysisPage: View {
     @Bindable var ws: Workspace
 
@@ -113,12 +113,7 @@ struct CADAnalysisPage: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Run") {
-                Picker("Backend", selection: $ws.setup.general.backend) {
-                    ForEach(SolverBackend.allCases, id: \.self) { Text($0.displayName).tag($0) }
-                }
-                if ws.setup.general.backend == .openfoam {
-                    IntField(label: "Cores", value: $ws.cadSpec.cores)
-                }
+                IntField(label: "OpenFOAM cores", value: $ws.cadSpec.cores)
                 HStack {
                     Button(ws.isMeshing ? "Building…" : "Build Case") { ws.buildCADAnalysis(run: false) }
                     Button("Build and Run") { ws.buildCADAnalysis(run: true) }
@@ -197,11 +192,10 @@ extension Workspace {
         }
     }
 
-    /// Mesh the CAD, set up the case and optionally run it with the selected backend.
+    /// Mesh the CAD, set up the case and optionally run it with OpenFOAM.
     func buildCADAnalysis(run: Bool) {
         guard !isMeshing, !isRunning, !cadSpec.path.isEmpty else { return }
         let spec = cadSpec
-        let backend = setup.general.backend
         let base = setup
         isMeshing = true
         statusText = "Meshing \((spec.path as NSString).lastPathComponent)…"
@@ -220,7 +214,6 @@ extension Workspace {
                     self.isMeshing = false
                     self.statusText = "Ready"
                     var s = built.setup
-                    s.general.backend = backend
                     s.openfoam.installation = base.openfoam.installation
                     s.openfoam.caseDirectory = work.appendingPathComponent("run").path
                     s.openfoam.cores = max(1, spec.cores)

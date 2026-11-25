@@ -1,29 +1,25 @@
 import SwiftUI
 import CurlewMesh
 import CurlewSolver
+import CurlewFoam
 
 struct GeneralPage: View {
     @Bindable var ws: Workspace
     var body: some View {
         Form {
             Section("Solver") {
-                Picker("Backend", selection: $ws.setup.general.backend) {
-                    ForEach(SolverBackend.allCases, id: \.self) { Text($0.displayName).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                if ws.setup.general.backend == .openfoam {
-                    Button("OpenFOAM settings…") { ws.selection = .openfoam }.buttonStyle(.link)
-                }
+                LabeledContent("OpenFOAM application", value: FoamCaseWriter.resolvedApplication(ws.setup).rawValue)
+                Button("OpenFOAM settings…") { ws.selection = .openfoam }.buttonStyle(.link)
                 Picker("Type", selection: $ws.setup.general.solver) {
                     Text("Pressure-Based").tag(SolverType.pressureBased)
                     Text("Density-Based").tag(SolverType.densityBased)
                 }
                 .pickerStyle(.radioGroup)
                 if ws.setup.general.solver == .densityBased {
-                    Text("Explicit coupled solver for compressible ideal-gas flow (Roe or AUSM+ fluxes, MUSCL with Venkatakrishnan limiting, 4-stage Runge-Kutta). Use an ideal-gas material; viscous model Inviscid or Laminar.")
+                    Text("Compressible ideal-gas flow with rhoCentralFoam (central-upwind fluxes). Use an ideal-gas material; viscous model Inviscid or Laminar.")
                         .font(.caption).foregroundStyle(.secondary)
-                    Picker("Flux type", selection: $ws.setup.methods.flux) {
-                        Text("Roe-FDS").tag(FluxScheme.roe); Text("AUSM+").tag(FluxScheme.ausm)
+                    Picker("Flux scheme", selection: $ws.setup.methods.flux) {
+                        Text("Kurganov").tag(FluxScheme.roe); Text("Tadmor").tag(FluxScheme.ausm)
                     }
                     NumberField(label: "Courant number", value: $ws.setup.methods.courantNumber)
                 }
@@ -416,7 +412,7 @@ struct BoundaryEditor: View {
                         }
                         NumberField(label: "Aerodynamic roughness z₀ (0 = smooth)", value: bc.roughnessLength, unit: "m")
                         if bc.wrappedValue.roughnessLength > 0 {
-                            Text("Rough terrain, used by OpenFOAM's atmNutkWallFunction (k-ε / k-ω cases). Curlew's own solver treats the wall as smooth.")
+                            Text("Rough terrain, used by OpenFOAM's atmNutkWallFunction (k-ε / k-ω cases).")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     case .pressureFarField:

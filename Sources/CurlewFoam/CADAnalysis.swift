@@ -4,7 +4,7 @@ import CurlewSolver
 
 /// "Import CAD for analysis": from a CAD file (or a sample) and an analysis type, mesh it and
 /// build a ready-to-run case — materials, boundary conditions, turbulence model, reference
-/// values and report definitions — that either backend can solve.
+/// values and report definitions — that OpenFOAM solves.
 public struct CADAnalysisSpec: Codable, Sendable, Equatable {
     public enum Kind: String, Codable, CaseIterable, Sendable {
         /// Body in a wind-tunnel box: drag, lift, force.
@@ -204,24 +204,22 @@ public enum CADAnalysis {
                 ms.blLayers = n
                 ms.blGrowth = min(1.35, max(1.1, pow(0.5 * ms.wallSize / ms.blFirstHeight, 1 / Double(n - 1))))
             }
-            var r: GmshDriver.Result
-            do {
-                r = try GmshDriver.generate(ms, workDir: workDir.appendingPathComponent("gmsh"), log: { _ in })
-            } catch let e as MeshError where ms.blLayers > 0 {
-                // prism stacks that cannot be inserted (e.g. where a body stands on the ground)
-                log("Prism layers could not be inserted (\(e)); meshing without layers. Use snappyHexMesh for layers on this model.\n")
-                ms.blLayers = 0
-                r = try GmshDriver.generate(ms, workDir: workDir.appendingPathComponent("gmsh"), log: { _ in })
-            }
-            if let inf = r.inflation { log(inf.description + "\n") }
-            if ms.blLayers > 0 {
-                // prism stacks at sharp edges (trailing edges, wing tips) can fold; such a mesh
-                // fails checkMesh and crashes the solver, so fall back to the plain tetrahedra
-                let q = MeshQuality.report(r.mesh)
-                if q.negativeVolumes > 0 || q.invertedFacePyramids > 0 {
-                    log("Prism layers folded at sharp edges (\(q.invertedFacePyramids) inverted face pyramids, \(q.negativeVolumes) non-positive cells); meshing without layers. Wall shear and heat transfer are then less accurate; use snappyHexMesh for layers on this model.\n")
-                    ms.blLayers = 0
-                    r = try GmshDriver.generate(ms, workDir: workDir.appendingPathComponent("gmsh"), log: { _ in })
+            var r = try GmshDriver.generate(ms, workDir: workDir.appendingPathComponent("gmsh"), log: { _ in })
+            if let layers = ms.inflation3D {
+                // prism layers by snappyHexMesh's layer addition on the Gmsh tetrahedra; where it
+                // cannot add them (sharp edges, a body on the ground) the mesh stays tetrahedral
+                do {
+                    let env = try FoamLocations.installation(for: CaseSetup()).resolve()
+                    let added = try FoamLayers.add(to: r.mesh, settings: layers, environment: env, log: { log($0 + "\n") })
+                    let q = MeshQuality.report(added.mesh)
+                    if q.negativeVolumes > 0 || q.invertedFacePyramids > 0 {
+                        log("The layered mesh has \(q.invertedFacePyramids) inverted face pyramids; keeping the tetrahedra without layers.\n")
+                    } else {
+                        r.mesh = added.mesh
+                        log(added.summary + "\n")
+                    }
+                } catch {
+                    log("Prism layers could not be added (\(error)); meshing without layers.\n")
                 }
             }
             mesh = r.mesh

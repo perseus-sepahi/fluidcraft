@@ -3,12 +3,12 @@ import CurlewMesh
 import CurlewSolver
 
 /// One OpenFOAM calculation of a Curlew case: write the case, run it in the selected
-/// installation, and read the latest time back into a `PressureBasedSolver` so Curlew's
-/// post-processing works on the OpenFOAM solution. Shared by the app and the CLI.
+/// installation, and read the latest time back into a `Solution` for Curlew's
+/// post-processing. Shared by the app and the CLI.
 public final class FoamSolve: @unchecked Sendable {
     public struct Outcome: Sendable {
-        /// A Curlew solver holding the OpenFOAM fields (nil when loading was off or failed).
-        public var solver: PressureBasedSolver?
+        /// The OpenFOAM fields read back (nil when loading was off or failed).
+        public var solution: Solution?
         public var report: FoamCaseReport
         public var caseDirectory: URL
         public var residuals: ResidualHistory
@@ -42,7 +42,8 @@ public final class FoamSolve: @unchecked Sendable {
 
     /// Blocking; call from a worker thread.
     /// - Parameters:
-    ///   - initial: nonuniform initial fields (Curlew initialization or solution) or nil.
+    ///   - initial: nonuniform initial fields (Curlew's standard initialization or a previous
+    ///     solution); nil = the case's own initialization (uniform values, potentialFoam for hybrid).
     ///   - residuals/reports: histories to continue (a restarted run appends to them).
     ///   - log: progress text (stage titles, warnings, periodic residual lines, errors).
     ///   - progress: called after every solver step with the updated histories.
@@ -118,7 +119,7 @@ public final class FoamSolve: @unchecked Sendable {
         progress(residuals, reports, residuals.iterations.last ?? 0, r.metrics.currentTime)
         if let f = r.metrics.fatal { log(f) }
 
-        var outcome = Outcome(solver: nil, report: report, caseDirectory: dir, residuals: residuals, reports: reports,
+        var outcome = Outcome(solution: nil, report: report, caseDirectory: dir, residuals: residuals, reports: reports,
                               failure: failure, seconds: Date().timeIntervalSince(t0), loadedTime: nil, metrics: r.metrics)
         let hasResults = (FoamTimes.latest(dir)?.value ?? 0) > 0
         let refined = o.adaptiveRefinement.enabled && transient
@@ -127,10 +128,10 @@ public final class FoamSolve: @unchecked Sendable {
         }
         if o.loadResults && hasResults && !refined {
             do {
-                let (solver, time) = try FoamSolve.load(caseDirectory: dir, mesh: mesh, setup: setup)
-                solver.restoreHistory(residuals: residuals, reports: reports)
-                if transient { solver.state.iteration = residuals.iterations.last ?? (offset + r.metrics.timeSteps) }
-                outcome.solver = solver
+                let (solution, time) = try FoamSolve.load(caseDirectory: dir, mesh: mesh, setup: setup)
+                solution.restoreHistory(residuals: residuals, reports: reports)
+                if transient { solution.state.iteration = residuals.iterations.last ?? (offset + r.metrics.timeSteps) }
+                outcome.solution = solution
                 outcome.loadedTime = time
                 log("Loaded OpenFOAM results at time \(time).")
             } catch {
@@ -144,12 +145,22 @@ public final class FoamSolve: @unchecked Sendable {
         return outcome
     }
 
-    /// Read a time directory of a case written for `mesh` into a new Curlew solver.
-    public static func load(caseDirectory dir: URL, mesh: Mesh, setup: CaseSetup, time: String? = nil) throws -> (PressureBasedSolver, String) {
+    /// Read a time directory of a case written for `mesh` into a new solution.
+    public static func load(caseDirectory dir: URL, mesh: Mesh, setup: CaseSetup, time: String? = nil) throws -> (Solution, String) {
         let loaded = try FoamResults.load(caseDirectory: dir, mesh: mesh, setup: setup, time: time)
-        let solver = try PressureBasedSolver(mesh: mesh, setup: setup)
-        solver.log = { _ in }
-        try solver.load(external: loaded.solution)
-        return (solver, loaded.timeName)
+        let solution = try Solution(mesh: mesh, setup: setup)
+        try solution.load(external: loaded.solution)
+        return (solution, loaded.timeName)
+    }
+
+    /// Initial fields for a fresh run: Curlew's initialization (standard values, expressions,
+    /// patches, values from a boundary zone; hybrid from the inlets where potentialFoam cannot
+    /// run), or nil when OpenFOAM initializes the case itself (hybrid → potentialFoam).
+    public static func initialFields(mesh: Mesh, setup: CaseSetup) throws -> FlowState? {
+        let potential = FoamCaseWriter.runsPotentialFoam(setup, app: FoamCaseWriter.resolvedApplication(setup), mesh: mesh, initial: nil)
+        guard setup.openfoam.initialFields == .curlew, InitialFields.computedByCurlew(setup, potentialFoamRuns: potential) else { return nil }
+        let s = try Solution(mesh: mesh, setup: setup)
+        s.loadInitialFields()
+        return s.state
     }
 }

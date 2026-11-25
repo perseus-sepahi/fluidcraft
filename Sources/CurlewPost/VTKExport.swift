@@ -5,7 +5,7 @@ import CurlewSolver
 /// VTK XML unstructured grid (.vtu) export of the volume mesh and cell data,
 /// using VTK_POLYHEDRON cells so any Curlew mesh opens in ParaView unchanged.
 public enum VTKExport {
-    public static func write(solver s: PressureBasedSolver, fields: [String]? = nil, to url: URL) throws {
+    public static func write(solver s: Solution, fields: [String]? = nil, to url: URL) throws {
         let m = s.mesh
         var out = Data()
         func w(_ str: String) { out.append(str.data(using: .utf8)!) }
@@ -84,7 +84,7 @@ public enum VTKExport {
     }
 
     /// Cell data as CSV (x, y, z, fields...).
-    public static func writeCSV(solver s: PressureBasedSolver, fields: [String], to url: URL) throws {
+    public static func writeCSV(solver s: Solution, fields: [String], to url: URL) throws {
         let cols = fields.compactMap { n in FieldCatalog.cellValues(n, s).map { (n, $0) } }
         var t = "x,y,z," + cols.map(\.0).joined(separator: ",") + "\n"
         for c in 0..<s.mesh.nCells {

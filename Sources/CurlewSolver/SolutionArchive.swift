@@ -12,7 +12,7 @@ public enum SolutionArchive {
         var scalarCount: Int
     }
 
-    public static func write(_ s: PressureBasedSolver) throws -> Data {
+    public static func write(_ s: Solution) throws -> Data {
         let st = s.state
         var arrays: [(String, [Double])] = [
             ("u", st.u.flatMap { [$0.x, $0.y, $0.z] }), ("p", st.p), ("T", st.T), ("k", st.k), ("omega", st.omega),
@@ -48,7 +48,7 @@ public enum SolutionArchive {
         return d
     }
 
-    public static func read(_ data: Data, into s: PressureBasedSolver) throws {
+    public static func read(_ data: Data, into s: Solution) throws {
         let b = [UInt8](data)
         var o = 0
         func u64() throws -> Int {
@@ -109,19 +109,5 @@ public enum SolutionArchive {
         st.time = header.time
         st.timeStep = header.timeStep
         s.afterRestore()
-    }
-}
-
-extension PressureBasedSolver {
-    /// Recompute derived quantities after loading data.
-    public func afterRestore() {
-        updateProperties()
-        computeGradients()
-        if setup.models.viscous.isTurbulent { updateWallFunctions() } else { updateLaminarWalls() }
-    }
-
-    public func restoreHistory(residuals r: ResidualHistory, reports: ReportHistory) {
-        residuals = r
-        reportHistory = reports
     }
 }

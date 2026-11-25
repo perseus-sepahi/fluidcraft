@@ -16,7 +16,6 @@ private func text(_ dir: URL, _ path: String) -> String {
         for c in ModuleCategory.allCases { #expect(!c.modules.isEmpty, "\(c.title)") }
         #expect(Set(ModuleCategory.allCases.flatMap(\.modules)) == Set(AppModule.allCases))
         #expect(AppModule.allCases.filter(\.buildsCase).count == 4)
-        #expect(CaseSetup().general.backend == .openfoam)
     }
 
     @Test func everyModuleIsListedOnce() throws {
@@ -50,7 +49,6 @@ private func text(_ dir: URL, _ path: String) -> String {
         for i in 1...4 { #expect((mesh.cellZones.first { $0.name == "turbine\(i)" }?.cellCount ?? 0) > 0) }
         // the second row sits lateralSpacing diameters beside the first
         #expect(abs(w.positions[2].y - w.positions[0].y - 5 * w.diameter) < 1e-9)
-        #expect(s.general.backend == .openfoam)
     }
 
     /// The chip's heat source integrates to the module's power for any design.

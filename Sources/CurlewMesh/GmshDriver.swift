@@ -26,7 +26,8 @@ public struct MeshingSettings: Codable, Sendable, Equatable {
     /// Distance over which sizes grow from wallSize to maxSize.
     public var growthDistance: Double = 0.5
     /// Boundary layer: first-cell height, growth ratio, total thickness (0 disables).
-    /// 2D meshes use Gmsh's BoundaryLayer field; 3D meshes get prism layers (`PrismInflation`).
+    /// 2D meshes use Gmsh's BoundaryLayer field; 3D meshes get prism layers from OpenFOAM's
+    /// snappyHexMesh (layer addition on the Gmsh mesh, `FoamLayers` in CurlewFoam).
     public var blFirstHeight: Double = 0
     public var blGrowth: Double = 1.2
     public var blThickness: Double = 0
@@ -115,7 +116,11 @@ public enum GmshDriver {
 
     public struct Result: Sendable {
         public var mesh: Mesh; public var script: String; public var log: String
-        public var inflation: InflationReport?
+        /// Summary of the prism layers OpenFOAM added (set by the caller that adds them).
+        public var layers: String?
+        public init(mesh: Mesh, script: String, log: String, layers: String? = nil) {
+            self.mesh = mesh; self.script = script; self.log = log; self.layers = layers
+        }
     }
 
     /// Generate the .geo script for the settings.
@@ -534,13 +539,7 @@ public enum GmshDriver {
             let errs = text.split(separator: "\n").filter { $0.contains("Error") }.prefix(5).joined(separator: "\n")
             throw MeshError.io("Gmsh failed (status \(status)).\n\(errs)")
         }
-        guard dim == 3, let inflation = s.inflation3D else {
-            return Result(mesh: try GmshReader.read(url: mshURL, depth2D: s.depth2D), script: geo, log: text)
-        }
-        var parsed = try GmshReader.parse(data: Data(contentsOf: mshURL))
-        let report = try PrismInflation.inflate(&parsed, settings: inflation)
-        log?(report.description + "\n")
-        return Result(mesh: try GmshReader.build(parsed), script: geo, log: text + "\n" + report.description, inflation: report)
+        return Result(mesh: try GmshReader.read(url: mshURL, depth2D: s.depth2D), script: geo, log: text)
     }
 
     /// NACA 4-digit coordinates (chord 1), closed trailing edge, cosine spacing; TE -> upper -> LE -> lower -> TE (excluded).

@@ -1,6 +1,5 @@
 import Foundation
 import CurlewMesh
-import CurlewLinear
 
 /// Precomputed discretisation geometry for a mesh.
 public final class FVGeometry: @unchecked Sendable {
@@ -25,13 +24,6 @@ public final class FVGeometry: @unchecked Sendable {
     public let hasNonOrthogonality: Bool
     /// Maximum angle (degrees) between face normal and cell-centre vector over interior faces.
     public let maxNonOrthogonality: Double
-    public let pattern: SparsePattern
-    public let upper: [Int32]
-    public let lower: [Int32]
-    /// Wall-normal distance of each cell (filled by WallDistance).
-    public var wallDistance: [Double] = []
-    /// For wall-adjacent cells, normal distance to the nearest wall face; for others 0.
-    public var wallFaceDistance: [Double] = []
 
     public init(mesh m: Mesh) {
         mesh = m
@@ -106,8 +98,6 @@ public final class FVGeometry: @unchecked Sendable {
         }
         lsOwner = lo; lsNeighbour = ln
 
-        let (pat, up, low) = SparsePattern.fromPairs(n: nCells, owner: m.owner, neighbour: m.neighbour)
-        pattern = pat; upper = up; lower = low
     }
 
     /// Automatic non-orthogonal limiter from the mesh (OpenFOAM practice).
@@ -131,44 +121,6 @@ public final class FVGeometry: @unchecked Sendable {
 
 /// Gradient reconstruction.
 public enum Gradient {
-    /// Conservative Green–Gauss gradient with skewness-corrected face values:
-    /// φ_f = w φ_P + (1−w) φ_N + (w ∇φ_P + (1−w) ∇φ_N)·(x_f − x'_f), where x'_f is the
-    /// interpolation point on the line P–N and ∇φ comes from `reconstruction` (least squares).
-    /// Exact for linear fields like least squares, but every face value is shared by its two
-    /// cells, so Σ ∇φ V over any region equals the surface integral of φ on its boundary.
-    /// Used for the pressure force: a non-conservative pressure source loses momentum where the
-    /// pressure has cell-scale structure (prism/tetrahedron transitions).
-    public static func conservative(_ g: FVGeometry, _ phi: [Double], boundary: [Double],
-                                    reconstruction rg: [Vec3], into grad: inout [Vec3], interface: [Bool]? = nil) {
-        let m = g.mesh
-        if grad.count != g.nCells { grad = [Vec3](repeating: .zero, count: g.nCells) }
-        let nI = g.nInternal
-        grad.withUnsafeMutableBufferPointer { gr in
-            let GR = SharedPtr(gr.baseAddress!)
-            Parallel.forEach(g.nCells) { range in
-                for c in range {
-                    var s = Vec3.zero
-                    for k in m.cellFaceRange(c) {
-                        let f = Int(m.cellFaces[k])
-                        let S = m.faceAreas[f]
-                        if f < nI {
-                            // fluid–solid interface: a wall with zero normal pressure gradient
-                            if let mask = interface, mask[f] { s += Int(m.owner[f]) == c ? phi[c] * S : -(phi[c] * S); continue }
-                            let P = Int(m.owner[f]), N = Int(m.neighbour[f])
-                            let w = g.weight[f]
-                            let xi = w * m.cellCentres[P] + (1 - w) * m.cellCentres[N]
-                            let pf = w * phi[P] + (1 - w) * phi[N] + dot(w * rg[P] + (1 - w) * rg[N], m.faceCentres[f] - xi)
-                            s += P == c ? pf * S : -(pf * S)
-                        } else {
-                            s += (g.isEmptyFace[f] ? phi[c] : boundary[f - nI]) * S
-                        }
-                    }
-                    GR[c] = s / m.cellVolumes[c]
-                }
-            }
-        }
-    }
-
     /// Least-squares (cell-based) or Green-Gauss (cell-based) gradient. `boundary`
     /// holds face values for every boundary face (index f - nInternal).
     /// `interface` marks internal faces (fluid–solid) treated as zero-gradient walls.

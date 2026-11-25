@@ -30,14 +30,13 @@ import Foundation
         s.initialization.method = .standard
         s.initialization.velocity = [.constant(speed), 0, 0]
         s.run.iterations = 60
-        s.general.backend = .openfoam
         s.openfoam.initialFields = .uniform
         s.openfoam.checkMesh = false
         return s
     }
 
     @discardableResult
-    func run(_ mesh: Mesh, _ setup: CaseSetup, _ tag: String, keep: Bool = false) throws -> (PressureBasedSolver?, FoamSolve.Outcome, URL) {
+    func run(_ mesh: Mesh, _ setup: CaseSetup, _ tag: String, keep: Bool = false) throws -> (Solution?, FoamSolve.Outcome, URL) {
         var s = setup
         s.openfoam.caseDirectory = "/tmp/curlew-more-\(tag)"
         try? FileManager.default.removeItem(atPath: s.openfoam.caseDirectory)
@@ -45,12 +44,12 @@ import Foundation
         let out = try FoamSolve(mesh: mesh, setup: s).run(initial: nil, log: { lines.append($0) }, progress: { _, _, _, _ in })
         if out.failure != nil { print("LOG \(tag): \(out.failure!)\n" + lines.suffix(40).joined(separator: "\n")) }
         #expect(out.failure == nil, "\(tag): \(out.failure ?? "")")
-        return (out.solver, out, URL(fileURLWithPath: s.openfoam.caseDirectory))
+        return (out.solution, out, URL(fileURLWithPath: s.openfoam.caseDirectory))
     }
 
     func text(_ dir: URL, _ path: String) -> String { (try? String(contentsOf: dir.appendingPathComponent(path), encoding: .utf8)) ?? "" }
 
-    func massFlow(_ s: PressureBasedSolver, _ patch: String) -> Double {
+    func massFlow(_ s: Solution, _ patch: String) -> Double {
         var r = ReportDefinition(name: "m", kind: .massFlowRate); r.zones = [patch]
         return Reports.evaluate(r, solver: s)
     }

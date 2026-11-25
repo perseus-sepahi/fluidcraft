@@ -4,7 +4,7 @@ import CurlewMesh
 import CurlewSolver
 import CurlewFoam
 
-/// Everything OpenFOAM: backend choice, installation, application and models, time and
+/// Everything OpenFOAM: installation, application and models, time and
 /// output, schemes, linear solvers, pressure–velocity coupling, parallel decomposition,
 /// function objects and the raw-dictionary escape hatches.
 struct OpenFOAMPage: View {
@@ -42,14 +42,8 @@ struct OpenFOAMPage: View {
 struct FoamBackendSection: View {
     @Bindable var ws: Workspace
     var body: some View {
-        Section("Solver Backend") {
-            Picker("Solve with", selection: $ws.setup.general.backend) {
-                ForEach(SolverBackend.allCases, id: \.self) { Text($0.displayName).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            Text(ws.setup.general.backend == .openfoam
-                 ? "Calculate writes this setup as an OpenFOAM case, runs it in the installation below and loads the latest time back, so every Results page works on the OpenFOAM solution."
-                 : "Curlew's built-in finite-volume solver. Switch to OpenFOAM to solve the same setup with an installed OpenFOAM.")
+        Section("Solver") {
+            Text("OpenFOAM solves every case. Calculate writes this setup as an OpenFOAM case, runs it in the installation below and loads the latest time back, so every Results page works on the OpenFOAM solution.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         Section("Installation") {
@@ -171,7 +165,7 @@ struct FoamPhysicsSection: View {
                 if ws.setup.openfoam.radiation.model == .P1 && ws.setup.openfoam.radiation.absorption <= 0 {
                     Text("P1 needs a participating gas (absorption > 0); use fvDOM for transparent air.").font(.caption).foregroundStyle(.orange)
                 }
-                Text("Needs the energy equation; the case runs with buoyantSimpleFoam / buoyantPimpleFoam (or the conjugate solver, where solid walls exchange radiation through qr). Curlew's own solver ignores radiation.")
+                Text("Needs the energy equation; the case runs with buoyantSimpleFoam / buoyantPimpleFoam (or the conjugate solver, where solid walls exchange radiation through qr).")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

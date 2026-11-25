@@ -279,7 +279,7 @@ struct FoamAveragingRefinementSection: View {
                 if let m = ws.mesh, m.cellShapeHistogram().contains(where: { $0.key != "hexahedra" && $0.value > 0 }) {
                     Text("OpenFOAM refines hexahedra only (hexRef8); this mesh has other cells too.").font(.caption).foregroundStyle(.orange)
                 }
-                Text("Splits each marked cell into 8 (3D meshes). The refined solution opens in ParaView and in Python scripts (Post-Processing), which read the mesh of each time; Curlew's own result pages keep the original mesh, so it is not loaded into them.")
+                Text("Splits each marked cell into 8 (3D meshes). The refined solution opens in ParaView and in Python scripts (Post-Processing), which read the mesh of each time; Curlew's Results pages keep the original mesh, so it is not loaded into them.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

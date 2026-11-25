@@ -83,7 +83,7 @@ public final class CellLocator: @unchecked Sendable {
     }
 }
 
-extension PressureBasedSolver {
+extension Solution {
     /// Sample a named field at points (gradient-reconstructed from the containing cell).
     public func sample(_ field: String, at points: [Vec3]) -> [Double] {
         guard let v = FieldCatalog.cellValues(field, self) else { return points.map { _ in .nan } }

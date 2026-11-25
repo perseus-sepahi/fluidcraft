@@ -4,7 +4,7 @@ import CurlewMesh
 /// `.curlew` case package: a directory with case.json, mesh.crlmesh and (optionally)
 /// data.bin, residuals.json and reports.json. Shared by the app and the CLI.
 public enum CasePackage {
-    public static func write(to dir: URL, mesh: Mesh, setup: CaseSetup, solver: PressureBasedSolver?) throws {
+    public static func write(to dir: URL, mesh: Mesh, setup: CaseSetup, solver: Solution?) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         try setup.encoded().write(to: dir.appendingPathComponent("case.json"))
@@ -32,7 +32,7 @@ public enum CasePackage {
     }
 
     /// Restore data (fields and histories) into a solver built for the package's mesh.
-    public static func restore(_ dir: URL, into solver: PressureBasedSolver) throws {
+    public static func restore(_ dir: URL, into solver: Solution) throws {
         try SolutionArchive.read(Data(contentsOf: dir.appendingPathComponent("data.bin")), into: solver)
         let r = (try? JSONDecoder().decode(ResidualHistory.self, from: Data(contentsOf: dir.appendingPathComponent("residuals.json")))) ?? ResidualHistory()
         let rep = (try? JSONDecoder().decode(ReportHistory.self, from: Data(contentsOf: dir.appendingPathComponent("reports.json")))) ?? ReportHistory()

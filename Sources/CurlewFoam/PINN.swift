@@ -201,7 +201,7 @@ public final class PINNJob: @unchecked Sendable {
     /// Write config.json, points.csv, boundary.csv, data.csv (hybrid/surrogate) and train.py.
     /// `solution` supplies the data points (required for hybrid and surrogate modes).
     @discardableResult
-    public func prepare(in dir: URL, solution: PressureBasedSolver?) throws -> Summary {
+    public func prepare(in dir: URL, solution: Solution?) throws -> Summary {
         let m = mesh, s = setup
         if s.cellZones.values.contains(where: { $0.kind == .solid }) {
             throw PINNError("The PINN module solves fluid regions only; this case has solid zones (conjugate heat transfer). Use the OpenFOAM solution, or its surrogate after removing the solids.")
@@ -217,7 +217,7 @@ public final class PINNJob: @unchecked Sendable {
         let L = max(axes.map { 0.5 * (hi[$0] - lo[$0]) }.max() ?? 1, 1e-12)
         let fluidZone = s.cellZones.values.first { $0.kind == .fluid }
         guard let mat = s.material(named: fluidZone?.material ?? "air") ?? MaterialLibrary.lookup("air") else { throw PINNError("no fluid material") }
-        let starter = try PressureBasedSolver(mesh: m, setup: s)
+        let starter = try Solution(mesh: m, setup: s)
         let bc = starter.bc
         var Uref = s.reference.velocity
         let inletSpeed = (0..<bc.nB).filter { bc.kind[$0] == .velocityInlet || bc.kind[$0] == .farField }.map { norm(bc.uSpec[$0]) }.max() ?? 0
@@ -376,7 +376,7 @@ public final class PINNJob: @unchecked Sendable {
     }
 
     /// Read prediction.csv (u, v, w, p, T per cell, in mesh order) into a Curlew solution.
-    public static func load(from dir: URL, mesh: Mesh, setup: CaseSetup) throws -> PressureBasedSolver {
+    public static func load(from dir: URL, mesh: Mesh, setup: CaseSetup) throws -> Solution {
         let text = try String(contentsOf: dir.appendingPathComponent("prediction.csv"), encoding: .utf8)
         var u: [Vec3] = [], p: [Double] = [], T: [Double] = []
         u.reserveCapacity(mesh.nCells); p.reserveCapacity(mesh.nCells); T.reserveCapacity(mesh.nCells)
@@ -386,13 +386,13 @@ public final class PINNJob: @unchecked Sendable {
             u.append(Vec3(v[0], v[1], v[2])); p.append(v[3]); T.append(v.count > 4 ? v[4] : 300)
         }
         guard u.count == mesh.nCells else { throw PINNError("prediction.csv has \(u.count) rows for \(mesh.nCells) cells") }
-        let solver = try PressureBasedSolver(mesh: mesh, setup: setup)
-        solver.log = { _ in }
-        try solver.initialize()
+        let solution = try Solution(mesh: mesh, setup: setup)
+        solution.loadInitialFields()       // turbulence and scalar fields the prediction lacks
         var e = ExternalSolution(u: u, p: p)
         if setup.models.energy { e.T = T }
-        try solver.load(external: e)
-        return solver
+        e.k = solution.state.k; e.omega = solution.state.omega; e.epsilon = solution.state.epsilon; e.nuTilda = solution.state.nuTilda
+        try solution.load(external: e)
+        return solution
     }
 
     // MARK: Training script

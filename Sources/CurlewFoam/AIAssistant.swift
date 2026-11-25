@@ -131,7 +131,7 @@ public enum AIAssistant {
     public static let systemPrompt = """
     You are an experienced CFD engineer helping a user of Curlew, a macOS CFD application that \
     meshes geometry (block meshes, Gmsh, snappyHexMesh) and solves cases with OpenFOAM (ESI \
-    v2606) by default, with its own finite-volume solver as an alternative. Curlew's setup \
+    v2606); Curlew does the setup, pre- and post-processing. Curlew's setup \
     follows Ansys Fluent's vocabulary (General, Models, Materials, Cell Zone Conditions, \
     Boundary Conditions, Methods, Controls, Report Definitions) and maps it to OpenFOAM \
     dictionaries. It has modules for wind farms (actuator disks in an atmospheric boundary \
@@ -149,8 +149,7 @@ public enum AIAssistant {
     public static func caseContext(mesh: Mesh?, setup: CaseSetup, quality: MeshQualityReport?, residuals: [String: Double],
                                    reports: [String: Double], recentLog: [String]) -> String {
         var t = "## Case: \(setup.title.isEmpty ? "untitled" : setup.title)\n"
-        t += "Solver: \(setup.general.backend.rawValue)"
-        if setup.general.backend == .openfoam { t += " (\(FoamCaseWriter.resolvedApplication(setup).rawValue))" }
+        t += "Solver: OpenFOAM \(FoamCaseWriter.resolvedApplication(setup).rawValue)"
         t += ", \(setup.general.time.rawValue), viscous \(setup.models.viscous.rawValue), energy \(setup.models.energy ? "on" : "off")"
         if setup.general.gravityEnabled { t += ", gravity \(setup.general.gravity)" }
         t += "\n"
@@ -191,10 +190,8 @@ public enum AIAssistant {
             }
         }
         t += "Methods: \(setup.methods.coupling.rawValue), momentum \(setup.methods.momentum.rawValue); URF p \(setup.controls.urf.pressure), U \(setup.controls.urf.momentum)\n"
-        if setup.general.backend == .openfoam {
-            let o = setup.openfoam
-            t += "OpenFOAM: turbulence \(o.turbulence.rawValue), wall treatment \(o.wallTreatment.rawValue), cores \(o.cores), radiation \(o.radiation.model.rawValue)\n"
-        }
+        let o = setup.openfoam
+        t += "OpenFOAM: turbulence \(o.turbulence.rawValue), wall treatment \(o.wallTreatment.rawValue), cores \(o.cores), radiation \(o.radiation.model.rawValue)\n"
         if !residuals.isEmpty {
             t += "Latest scaled residuals: " + residuals.sorted { $0.key < $1.key }.map { String(format: "%@ %.2e", $0.key as NSString, $0.value) }.joined(separator: ", ") + "\n"
         }

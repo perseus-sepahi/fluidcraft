@@ -57,9 +57,6 @@ struct CurlewApp: App {
                 Button("Calculate") { ws.calculate() }.disabled(ws.mesh == nil || ws.isRunning)
                 Button("Stop") { ws.stop() }.disabled(!ws.isRunning).keyboardShortcut(".", modifiers: .command)
                 Divider()
-                Picker("Backend", selection: Binding(get: { ws.setup.general.backend }, set: { ws.setup.general.backend = $0 })) {
-                    ForEach(SolverBackend.allCases, id: \.self) { Text($0.displayName).tag($0) }
-                }
                 Button("Write OpenFOAM Case") { ws.writeFoamCase() }.disabled(ws.mesh == nil || ws.isRunning)
                 Button("Load OpenFOAM Results") { ws.loadFoamResults() }.disabled(ws.mesh == nil || ws.isRunning)
                 Button("Open OpenFOAM Case in ParaView") { ws.openFoamInParaView() }

@@ -70,6 +70,7 @@ public enum FoamResults {
                 if sol.bP != nil { var a = g.bP ?? [Double](repeating: 0, count: nB); bnd(sol.bP, into: &a); g.bP = a }
                 if let ws = sol.bWallShear { var a = g.bWallShear ?? [Vec3](repeating: .zero, count: nB); bnd(ws, into: &a); g.bWallShear = a }
                 if let yp = sol.bYPlus { var a = g.bYPlus ?? [Double](repeating: 0, count: nB); bnd(yp, into: &a); g.bYPlus = a }
+                if let hf = sol.bHeatFlux { var a = g.bHeatFlux ?? [Double](repeating: 0, count: nB); bnd(hf, into: &a); g.bHeatFlux = a }
                 if let mf = sol.massFlux {
                     var a = g.massFlux ?? [Double](repeating: 0, count: m.nFaces)
                     for rf in 0..<r.mesh.nFaces where rf < rnI || globalBF(rf) != nil { a[Int(r.faceMap[rf])] = mf[rf] }
@@ -139,7 +140,8 @@ public enum FoamResults {
         }
         let T = file("T")?.internalField?.scalars(count: n)
         // Density per cell: written rho if any, else from the material.
-        let rho: [Double] = file("rho")?.internalField?.scalars(count: n) ?? (0..<n).map { c in
+        let writtenRho = file("rho")?.internalField?.scalars(count: n)
+        let rho: [Double] = writtenRho ?? (0..<n).map { c in
             switch mat.densityMethod {
             case .idealGas: return (thermal ? praw[c] : pop) / (mat.gasConstant * max(T?[c] ?? 300, 1))
             case .incompressibleIdealGas: return pop / (mat.gasConstant * max(T?[c] ?? 300, 1))
@@ -195,6 +197,9 @@ public enum FoamResults {
             sol.bWallShear = ws
         }
         if let f = file("yPlus") { sol.bYPlus = boundaryScalars(f, fallback: [Double](repeating: 0, count: n)) }
+        // wallHeatFlux: alphaEff*snGrad(h), positive from the wall into the fluid (Curlew's sign)
+        if let f = file("wallHeatFlux") { sol.bHeatFlux = boundaryScalars(f, fallback: [Double](repeating: 0, count: n)) }
+        if let r = writtenRho { sol.rho = r }
 
         _ = t
         return (sol, read)

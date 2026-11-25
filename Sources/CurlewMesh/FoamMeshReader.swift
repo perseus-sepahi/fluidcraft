@@ -32,6 +32,19 @@ public enum FoamMeshReader {
         b.points = points
         b.nCells = max(nCells, (neighbour.max().map { Int($0) } ?? -1) + 1)
         for f in 0..<neighbour.count { b.addFace(faces[f], c0: owner[f], c1: neighbour[f]) }
+        // Cell zones (blockMesh block names, topoSet/setsToZones, snappyHexMesh zones); cells in
+        // no zone stay in the default "fluid" zone.
+        if let zd = try? load("cellZones"), let zones = try? parseCellZones(zd), !zones.isEmpty {
+            var specs = [MeshBuilder.CellZoneSpec(name: "fluid", kind: .fluid)]
+            var of = [Int32](repeating: 0, count: b.nCells)
+            for z in zones {
+                var idx = specs.firstIndex { $0.name == z.name } ?? -1
+                if idx < 0 { specs.append(MeshBuilder.CellZoneSpec(name: z.name, kind: .fluid)); idx = specs.count - 1 }
+                for c in z.cells where c >= 0 && Int(c) < b.nCells { of[Int(c)] = Int32(idx) }
+            }
+            b.cellZones = specs
+            b.cellZoneOfCell = of
+        }
         for p in patches {
             let kind: ZoneKind
             switch p.type {
@@ -56,9 +69,13 @@ public enum FoamMeshReader {
         guard p.seek("FoamFile") else { throw MeshError.parse("FoamFile header missing") }
         var h = Header(binary: false, labelBytes: 4, scalarBytes: 8, className: "")
         try p.expectChar("{")
+        var depth = 1   // v2606 headers carry a nested `meta { names (…); }` block
         while let t = p.token() {
-            if t == "}" { break }
+            if t == "}" { depth -= 1; if depth == 0 { break }; continue }
+            if t == "{" { depth += 1; continue }
+            if depth > 1 { if p.line().contains("}") { depth -= 1 }; continue }
             let rest = p.line().trimmingCharacters(in: CharacterSet(charactersIn: " ;\""))
+            if rest.hasPrefix("{") { if !rest.hasSuffix("}") { depth += 1 }; continue }   // a sub-dictionary
             switch t {
             case "format": h.binary = rest.hasPrefix("binary")
             case "class": h.className = rest
@@ -67,7 +84,7 @@ public enum FoamMeshReader {
                 if rest.contains("scalar=32") { h.scalarBytes = 4 }
             default: break
             }
-            if rest.hasSuffix("}") { break }
+            if rest.hasSuffix("}") { depth -= 1; if depth == 0 { break } }
         }
         skipComments(&p)
         return h
@@ -198,6 +215,49 @@ public enum FoamMeshReader {
                 }
             }
             out.append(patch)
+        }
+        return out
+    }
+
+    struct CellZoneEntry { var name: String; var cells: [Int32] }
+
+    /// polyMesh/cellZones: `N ( name { type cellZone; cellLabels List<label> n (…); } … )`.
+    static func parseCellZones(_ data: Data) throws -> [CellZoneEntry] {
+        var p = ByteParser(data: data)
+        let h = try header(&p)
+        let n = try p.int()
+        try p.expectChar("(")
+        var out: [CellZoneEntry] = []
+        for _ in 0..<n {
+            skipComments(&p)
+            guard let name = p.token() else { break }
+            try p.expectChar("{")
+            var cells: [Int32] = []
+            while let t = p.token() {
+                if t == "}" { break }
+                if t == "cellLabels" {
+                    skipComments(&p)
+                    p.skipSpace()
+                    if p.matches(Array("List<label>".utf8)) { p.skip(bytes: 11) }
+                    let count = try p.int()
+                    p.skipSpace()
+                    if p.current == UInt8(ascii: "{") {
+                        p.skip(bytes: 1)
+                        let v = try p.int()
+                        cells = [Int32](repeating: Int32(v), count: count)
+                        try p.expectChar("}")
+                    } else {
+                        try p.expectChar("(")
+                        cells = [Int32](repeating: 0, count: count)
+                        for i in 0..<count { cells[i] = Int32(h.binary ? readBinaryLabel(&p, h.labelBytes) : try p.int()) }
+                        try p.expectChar(")")
+                    }
+                    try p.expectChar(";")
+                    continue
+                }
+                _ = p.line()   // type cellZone; and other entries
+            }
+            out.append(CellZoneEntry(name: name, cells: cells))
         }
         return out
     }

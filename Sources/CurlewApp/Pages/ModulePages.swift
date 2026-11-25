@@ -36,7 +36,7 @@ struct ModuleRibbon: View {
             Spacer()
             Label(ws.activeModule.title, systemImage: ws.activeModule.symbol).font(.caption)
                 .onTapGesture { ws.selection = .module }
-            Text(ws.setup.general.backend == .openfoam ? "Solver: OpenFOAM" : "Solver: Curlew")
+            Text("Solver: OpenFOAM")
                 .font(.caption).foregroundStyle(.secondary)
                 .padding(.horizontal, 6).padding(.vertical, 3)
                 .background(.quaternary, in: Capsule())
@@ -54,7 +54,7 @@ extension Workspace {
         selection = .module
     }
 
-    /// Build the selected module's case (and run it with the current backend).
+    /// Build the selected module's case (and run it with OpenFOAM).
     func buildModule(run: Bool) {
         let m = activeModule
         guard m.buildsCase, !isRunning, !isMeshing else { return }
@@ -78,7 +78,7 @@ extension Workspace {
                     self.display.surfaces = []
                     self.namedSurfaces = []
                     self.documentURL = nil
-                    self.log("\(m.title): \(mesh.summary); solver \(s.general.backend == .openfoam ? FoamCaseWriter.resolvedApplication(s).rawValue : "Curlew"), \(cores) core(s)")
+                    self.log("\(m.title): \(mesh.summary); OpenFOAM \(FoamCaseWriter.resolvedApplication(s).rawValue), \(cores) core(s)")
                     if run { self.calculate() }
                 }
             } catch {
@@ -93,7 +93,7 @@ extension Workspace {
         guard let mesh, !pinnBusy else { if mesh == nil { log("Build or load a case first (a module, a tutorial or a mesh).", .warning) }; return }
         let job = PINNJob(mesh: mesh, setup: setup, settings: moduleParams.pinn)
         let dir = PINNJob.defaultDirectory(for: setup)
-        let sol = initialized ? solver : nil
+        let sol = hasResults ? solver : nil
         let python = PINNJob.defaultPython
         pinnBusy = true; pinnJob = job; pinnLoss = []
         pinnStatus = "Preparing…"
@@ -125,6 +125,7 @@ extension Workspace {
                     self.solver = solver
                     self.post = PostProcessor(solver: solver)
                     self.initialized = true
+                    self.hasResults = true
                     if self.display.mode == .mesh { self.display.mode = .contours }
                     self.refreshDisplay()
                     self.pinnStatus = "Prediction loaded from \(dir.path)"
@@ -219,10 +220,6 @@ struct ModuleRunSection: View {
     @Bindable var ws: Workspace
     var body: some View {
         Section("Run") {
-            Picker("Solver", selection: $ws.setup.general.backend) {
-                ForEach(SolverBackend.allCases, id: \.self) { Text($0.displayName).tag($0) }
-            }
-            .pickerStyle(.segmented)
             IntField(label: "OpenFOAM cores", value: $ws.moduleCores)
             HStack {
                 Button(ws.isMeshing ? "Building…" : "Build Case") { ws.buildModule(run: false) }
@@ -230,7 +227,7 @@ struct ModuleRunSection: View {
             }
             .disabled(ws.isMeshing || ws.isRunning || (ws.activeModule.needsGmsh && !GmshDriver.isAvailable))
             if ws.foamInstallations.isEmpty {
-                Label("No OpenFOAM installation found yet (OpenFOAM page › Installation). Without one, Curlew's own solver is used.", systemImage: "exclamationmark.triangle")
+                Label("No OpenFOAM installation found yet (OpenFOAM page › Installation). Build Case works without it; running needs OpenFOAM.", systemImage: "exclamationmark.triangle")
                     .font(.caption).foregroundStyle(.orange)
             }
             Text("Every setting the module makes can be changed afterwards on the Setup, Solution and OpenFOAM pages before running.")

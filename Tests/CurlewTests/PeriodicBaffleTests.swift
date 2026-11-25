@@ -28,13 +28,12 @@ import Foundation
         s.initialization.method = .standard
         s.initialization.velocity = [.constant(speed), 0, 0]
         s.run.iterations = 2000
-        s.general.backend = .openfoam
         s.openfoam.initialFields = .uniform
         s.openfoam.residualP = 1e-7; s.openfoam.residualU = 1e-8
         return s
     }
 
-    func run(_ mesh: Mesh, _ setup: CaseSetup, _ tag: String) throws -> (PressureBasedSolver, FoamSolve.Outcome) {
+    func run(_ mesh: Mesh, _ setup: CaseSetup, _ tag: String) throws -> (Solution, FoamSolve.Outcome) {
         var s = setup
         s.openfoam.caseDirectory = "/tmp/curlew-test-\(tag)"
         try? FileManager.default.removeItem(atPath: s.openfoam.caseDirectory)
@@ -42,12 +41,12 @@ import Foundation
         let out = try FoamSolve(mesh: mesh, setup: s).run(initial: nil, log: { lines.append($0) }, progress: { _, _, _, _ in })
         if out.failure != nil { print("LOG \(tag): \(out.failure!)\n" + lines.suffix(30).joined(separator: "\n")) }
         #expect(out.failure == nil, "\(tag): \(out.failure ?? "")")
-        let sol = try #require(out.solver)
+        let sol = try #require(out.solution)
         if out.failure == nil { try? FileManager.default.removeItem(atPath: s.openfoam.caseDirectory) }
         return (sol, out)
     }
 
-    func inletPressure(_ s: PressureBasedSolver) -> Double {
+    func inletPressure(_ s: Solution) -> Double {
         var r = ReportDefinition(name: "p", kind: .areaWeightedAverage); r.zones = ["inlet"]; r.field = "pressure"
         return Reports.evaluate(r, solver: s)
     }

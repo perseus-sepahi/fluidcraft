@@ -1,5 +1,6 @@
 import Foundation
 import CurlewMesh
+import CurlewSolver
 
 /// Published reference solutions and the cases that reproduce them.
 public enum Benchmarks {
@@ -63,7 +64,7 @@ public enum Benchmarks {
         return (mesh, s)
     }
 
-    public static func compareCavity(_ solver: PressureBasedSolver, re: Int) -> [Comparison] {
+    public static func compareCavity(_ solver: Solution, re: Int) -> [Comparison] {
         let z = solver.mesh.bounds.centre.z
         let uPts = ghiaY.map { Vec3(0.5, min(max($0, 1e-9), 1 - 1e-9), z) }
         let vPts = ghiaX.map { Vec3(min(max($0, 1e-9), 1 - 1e-9), 0.5, z) }
@@ -112,7 +113,6 @@ public enum Benchmarks {
         s.general.gravityEnabled = true
         s.general.gravity = [0, -g, 0]
         s.general.operatingTemperature = 300.5
-        s.methods.pressure = .bodyForceWeighted
         var fluid = Material(name: "boussinesq-fluid")
         fluid.densityMethod = .boussinesq
         fluid.density = 1; fluid.viscosity = nu; fluid.specificHeat = 1; fluid.thermalConductivity = alpha
@@ -136,7 +136,7 @@ public enum Benchmarks {
     }
 
     /// Returns (Nu on hot wall, u_max * L/alpha, y at u_max, v_max * L/alpha, x at v_max).
-    public static func measureNaturalConvection(_ solver: PressureBasedSolver, alpha: Double) -> (Double, Double, Double, Double, Double) {
+    public static func measureNaturalConvection(_ solver: Solution, alpha: Double) -> (Double, Double, Double, Double, Double) {
         let m = solver.mesh
         var q = 0.0, a = 0.0
         if let z = m.zone(named: "x-min") {
@@ -211,7 +211,7 @@ public enum Benchmarks {
     }
 
     /// Local skin friction at x on the plate, plus u+ / y+ profile there.
-    public static func flatPlateSkinFriction(_ solver: PressureBasedSolver, x: Double) -> (cf: Double, profile: [(Double, Double)]) {
+    public static func flatPlateSkinFriction(_ solver: Solution, x: Double) -> (cf: Double, profile: [(Double, Double)]) {
         let m = solver.mesh
         guard let z = m.zone(named: "plate") else { return (.nan, []) }
         var best = -1, bd = Double.infinity
@@ -235,7 +235,7 @@ public enum Benchmarks {
     }
 
     /// Momentum-thickness Reynolds number at station x (edge velocity taken at y = 0.5).
-    public static func flatPlateReTheta(_ solver: PressureBasedSolver, x: Double, nu: Double = 1 / 5e6) -> Double {
+    public static func flatPlateReTheta(_ solver: Solution, x: Double, nu: Double = 1 / 5e6) -> Double {
         let zc = solver.mesh.bounds.centre.z
         let n = 4000
         let ys = (0...n).map { 0.2 * pow(Double($0) / Double(n), 2) }
@@ -281,6 +281,9 @@ public enum Benchmarks {
         s.run.timeStepSize = dt
         s.run.numberOfTimeSteps = Int((endTime / dt).rounded())
         s.run.maxIterationsPerTimeStep = 8
+        // Δt = 0.05 puts the Courant number near the cylinder well above 1: PIMPLE needs outer
+        // correctors there (PISO mode over-predicts the lift amplitude by 25 %)
+        s.openfoam.nOuterCorrectors = 4
         s.residuals.continuity = 1e-4
         s.residuals.velocity = 1e-5
         s.reference.velocity = 1; s.reference.density = 1; s.reference.area = 1; s.reference.length = 1
@@ -434,7 +437,7 @@ public enum Benchmarks {
     }
 
     /// L1 density error against the exact solution, normalised by the left density.
-    public static func sodError(_ solver: PressureBasedSolver, endTime: Double) -> (l1: Double, profile: [(Double, Double, Double)]) {
+    public static func sodError(_ solver: Solution, endTime: Double) -> (l1: Double, profile: [(Double, Double, Double)]) {
         var err = 0.0, prof: [(Double, Double, Double)] = []
         let m = solver.mesh
         for c in 0..<m.nCells {

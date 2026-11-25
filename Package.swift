@@ -20,10 +20,8 @@ let package = Package(
     targets: [
         // Unstructured polyhedral mesh, geometry, quality, importers and mesh generation.
         .target(name: "CurlewMesh", swiftSettings: numeric),
-        // Sparse matrices, aggregation AMG, Krylov solvers, Metal mixed-precision backend.
-        .target(name: "CurlewLinear", swiftSettings: numeric),
         // Case model, pressure- and density-based finite-volume solvers, physics models.
-        .target(name: "CurlewSolver", dependencies: ["CurlewMesh", "CurlewLinear"], swiftSettings: numeric),
+        .target(name: "CurlewSolver", dependencies: ["CurlewMesh"], swiftSettings: numeric),
         // Surfaces, contours, vectors, pathlines, plots, reports and data export.
         .target(name: "CurlewPost", dependencies: ["CurlewMesh", "CurlewSolver"], swiftSettings: numeric),
         // OpenFOAM backend: installation discovery, case writer, staged runner, log parsing,
@@ -31,17 +29,17 @@ let package = Package(
         .target(name: "CurlewFoam", dependencies: ["CurlewMesh", "CurlewSolver"], swiftSettings: plain),
         .executableTarget(
             name: "CurlewApp",
-            dependencies: ["CurlewMesh", "CurlewLinear", "CurlewSolver", "CurlewPost", "CurlewFoam"],
+            dependencies: ["CurlewMesh", "CurlewSolver", "CurlewPost", "CurlewFoam"],
             swiftSettings: plain
         ),
         .executableTarget(
             name: "CurlewCLI",
-            dependencies: ["CurlewMesh", "CurlewLinear", "CurlewSolver", "CurlewPost", "CurlewFoam"],
+            dependencies: ["CurlewMesh", "CurlewSolver", "CurlewPost", "CurlewFoam"],
             swiftSettings: plain
         ),
         .testTarget(
             name: "CurlewTests",
-            dependencies: ["CurlewMesh", "CurlewLinear", "CurlewSolver", "CurlewPost", "CurlewFoam"],
+            dependencies: ["CurlewMesh", "CurlewSolver", "CurlewPost", "CurlewFoam"],
             resources: [.copy("Fixtures")],
             swiftSettings: plain
         ),

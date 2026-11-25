@@ -11,7 +11,6 @@ import Foundation
 
     func cavity() throws -> (Mesh, CaseSetup) {
         var (mesh, s) = try Benchmarks.cavityCase(re: 100, cells: 32)
-        s.general.backend = .openfoam
         s.openfoam.initialFields = .uniform
         s.run.iterations = 600
         var post = FoamPostProcessing()
@@ -64,7 +63,7 @@ import Foundation
         #expect(c.columns.contains("U_0") || c.columns.contains("U_x") || c.columns.contains { $0.hasPrefix("U") })
         #expect(c.rows.count == 50)
         // the sampled centreline velocity matches Curlew's own sample of the loaded solution
-        let sol = try #require(out.solver)
+        let sol = try #require(out.solution)
         let ui = c.columns.firstIndex { $0 == "U_0" || $0 == "U_x" || $0 == "U:0" }!
         let mid = c.rows[25]
         let curlew = sol.sample("x-velocity", at: [Vec3(0.5, mid[0], mesh.bounds.centre.z)])[0]
@@ -80,7 +79,6 @@ import Foundation
     /// mapFields from a converged run and setFields in a box, before one iteration.
     @Test(.enabled(if: hasFoam)) func preProcessingRuns() throws {
         var (mesh, base) = try Benchmarks.cavityCase(re: 100, cells: 24)
-        base.general.backend = .openfoam
         base.openfoam.initialFields = .uniform
         base.run.iterations = 400
         let srcDir = "/tmp/curlew-test-mapsource"
@@ -105,7 +103,7 @@ import Foundation
         let setLog = (try? String(contentsOf: dir.appendingPathComponent("log.setFields"), encoding: .utf8)) ?? ""
         #expect(mapLog.contains("End") && setLog.contains("End"))
         // after one iteration the mapped solution is still the converged one away from the box
-        let sa = try #require(outA.solver), sb = try #require(outB.solver)
+        let sa = try #require(outA.solution), sb = try #require(outB.solution)
         let probe = [Vec3(0.2, 0.8, mesh.bounds.centre.z)]
         #expect(abs(sa.sample("x-velocity", at: probe)[0] - sb.sample("x-velocity", at: probe)[0]) < 0.02)
         try? FileManager.default.removeItem(atPath: srcDir); try? FileManager.default.removeItem(at: dir)

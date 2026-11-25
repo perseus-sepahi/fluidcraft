@@ -3,6 +3,7 @@ import Charts
 import UniformTypeIdentifiers
 import CurlewMesh
 import CurlewSolver
+import CurlewFoam
 
 struct ContentView: View {
     @Bindable var ws: Workspace
@@ -448,7 +449,7 @@ struct ValidationPage: View {
     var body: some View {
         Form {
             Section {
-                Text("Each benchmark rebuilds its own mesh and case, runs Curlew's solver, and compares with published reference data.")
+                Text("Each benchmark builds its own mesh and case, solves it with OpenFOAM, reads the results back and compares Curlew's measurements with published reference data. This checks meshing, case writing and post-processing end to end.")
                     .font(.caption).foregroundStyle(.secondary)
                 ForEach(ValidationSuite.Case.allCases, id: \.self) { c in
                     HStack {
@@ -458,7 +459,7 @@ struct ValidationPage: View {
                         }
                         Spacer()
                         if running == c { ProgressView().controlSize(.small) }
-                        Button("Run") { run(c) }.disabled(running != nil || ws.isRunning || (c.needsGmsh && !GmshDriver.isAvailable))
+                        Button("Run") { run(c) }.disabled(running != nil || ws.isRunning || (c.needsGmsh && !GmshDriver.isAvailable) || ws.foamInstallations.isEmpty)
                     }
                 }
             }
@@ -471,7 +472,7 @@ struct ValidationPage: View {
                                 Text(r.quantity).font(.callout)
                             }
                             Text("\(r.name)").font(.caption2).foregroundStyle(.secondary)
-                            Text("reference \(r.reference)   ·   Curlew \(r.computed)").font(.system(.caption, design: .monospaced))
+                            Text("reference \(r.reference)   ·   OpenFOAM \(r.computed)").font(.system(.caption, design: .monospaced))
                         }
                     }
                     Button("Clear") { ws.validationResults = [] }
@@ -485,11 +486,11 @@ struct ValidationPage: View {
         ws.log("Validation: \(c.rawValue)", .command)
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let rows = try ValidationSuite.run(c) { line in DispatchQueue.main.async { ws.log(line) } }
+                let rows = try ValidationSuite.run(c, cores: ws.setup.openfoam.cores) { line in DispatchQueue.main.async { ws.log(line) } }
                 DispatchQueue.main.async {
                     for r in rows {
                         ws.validationResults.append(ValidationRow(name: r.benchmark, quantity: r.quantity, reference: r.reference, computed: r.computed, passed: r.passed))
-                        ws.log("  \(r.passed ? "PASS" : "FAIL")  \(r.quantity): reference \(r.reference), Curlew \(r.computed)", r.passed ? .info : .warning)
+                        ws.log("  \(r.passed ? "PASS" : "FAIL")  \(r.quantity): reference \(r.reference), OpenFOAM \(r.computed)", r.passed ? .info : .warning)
                     }
                     running = nil
                 }

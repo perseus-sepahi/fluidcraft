@@ -1,9 +1,10 @@
 import Foundation
 import CurlewMesh
+import CurlewSolver
 
 /// Engineering modules: parametric wind-energy and electronics-cooling cases. Each module is a
 /// set of design parameters (Codable, so a case can store them) and `build()`, which makes the
-/// mesh and a complete case for the OpenFOAM backend. The tutorials are the default designs.
+/// mesh and a complete OpenFOAM case. The tutorials are the default designs.
 extension TutorialCatalog {
     public static let engineering: [Tutorial] = [
         Tutorial(id: "wind-farm", title: "Wind Farm: Three Turbines in a Row (actuator disks)",
@@ -119,7 +120,6 @@ public struct WindFarmModule: Codable, Sendable, Equatable {
         }
         var s = CaseSetup()
         s.title = "Wind farm"
-        s.general.backend = .openfoam
         s.models.viscous = turbulence
         s.models.wallTreatment = .standardWallFunctions
         s.adopt(mesh: mesh)
@@ -235,7 +235,6 @@ public struct WindTurbineRotorModule: Codable, Sendable, Equatable {
         let mesh = try GmshReader.read(url: msh)
         var s = CaseSetup()
         s.title = "Wind-turbine rotor"
-        s.general.backend = .openfoam
         s.models.viscous = turbulence
         s.adopt(mesh: mesh)
         for k in s.cellZones.keys { s.cellZones[k]!.material = "air" }
@@ -325,7 +324,6 @@ public struct AirCooledHeatSinkModule: Codable, Sendable, Equatable {
         ], cellZones: zones).build()
         var s = CaseSetup()
         s.title = "Air-cooled chip"
-        s.general.backend = .openfoam
         s.models.viscous = turbulence
         s.models.energy = true
         s.adopt(mesh: mesh)
@@ -417,7 +415,6 @@ public struct LiquidColdPlateModule: Codable, Sendable, Equatable {
         ], cellZones: zones).build()
         var s = CaseSetup()
         s.title = "Liquid-cooled chip"
-        s.general.backend = .openfoam
         s.models.viscous = .laminar
         s.models.energy = true
         s.adopt(mesh: mesh)

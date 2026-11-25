@@ -149,12 +149,12 @@ public final class SurfaceBuilder: @unchecked Sendable {
 
 /// Builds display surfaces for a solved case.
 public final class PostProcessor: @unchecked Sendable {
-    public let solver: PressureBasedSolver
+    public let solver: Solution
     public let builder: SurfaceBuilder
     var nodeCache: [String: [Double]] = [:]
     var cachedIteration = -1
 
-    public init(solver: PressureBasedSolver) {
+    public init(solver: Solution) {
         self.solver = solver
         builder = SurfaceBuilder(mesh: solver.mesh)
     }

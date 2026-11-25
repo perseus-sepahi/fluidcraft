@@ -70,13 +70,31 @@ public enum FoamCaseWriter {
         return t
     }
 
+    /// potentialFoam initializes U (and phi) before the solver: always for the potentialFoam
+    /// option, and for Curlew's hybrid initialization, on incompressible single-region cases
+    /// with an inflow (with walls only there is no potential flow to compute). Never on top of
+    /// a previous solution.
+    public static func runsPotentialFoam(_ s: CaseSetup, app: FoamApplication, mesh: Mesh, initial: FlowState?) -> Bool {
+        guard initial == nil || initial!.isInitialization, !app.isThermal, !app.isMultiRegion, app != .potentialFoam, !s.openfoam.continueFromLatestTime else { return false }
+        switch s.openfoam.initialFields {
+        case .potentialFoam: return true
+        case .uniform: return false
+        case .curlew:
+            guard s.initialization.method == .hybrid else { return false }
+            return mesh.boundaryZones.contains { z in
+                let k = s.boundaries[z.name]?.type ?? z.kind
+                return k == .velocityInlet || k == .massFlowInlet || k == .pressureFarField
+            }
+        }
+    }
+
     static func fluidMaterial(_ s: CaseSetup) -> Material? {
         let zone = s.cellZones.values.first { $0.kind == .fluid }
         return s.material(named: zone?.material ?? "air") ?? s.materials.first { $0.kind == .fluid }
     }
 
-    /// Write the case. `initial` supplies nonuniform initial fields (Curlew's initialization
-    /// or a converged Curlew solution) on this mesh; nil writes uniform values.
+    /// Write the case. `initial` supplies nonuniform initial fields (Curlew's standard
+    /// initialization or a previous solution) on this mesh; nil writes uniform values.
     @discardableResult
     public static func write(mesh m: Mesh, setup inSetup: CaseSetup, to dir: URL, initial: FlowState? = nil,
                              writeMesh: Bool = true, writeFields: Bool = true, startTime: Double = 0) throws -> FoamCaseReport {
@@ -334,7 +352,7 @@ final class Writer {
         pop = setup.general.operatingPressure
         timeDir = FoamNum.time(startTime)
         report = FoamCaseReport(application: app, turbulence: turb, cores: max(1, setup.openfoam.cores),
-                                runsPotentialFoam: setup.openfoam.initialFields == .potentialFoam && !app.isThermal && initial == nil,
+                                runsPotentialFoam: FoamCaseWriter.runsPotentialFoam(setup, app: app, mesh: mesh, initial: initial),
                                 kinematicPressure: !app.isThermal, density: mat.density, operatingPressure: setup.general.operatingPressure)
     }
 
@@ -834,11 +852,7 @@ final class Writer {
         let st = initial
         let wall = "        type            noSlip;\n"
         // U
-        // A potential-flow initial field is singular at sharp edges (fin tips, trailing edges);
-        // the kinetic energy there swamps the energy equation of thermophysical solvers, so the
-        // initial speed is capped at twice the fastest boundary speed.
-        let uCap = 2 * max((0..<bcd.nB).map { norm(bcd.uSpec[$0]) }.max() ?? 0, s.reference.velocity, norm(initialVelocity), 1e-6)
-        let u0 = st.map { state in state.u.map { v -> Vec3 in let n = norm(v); return n > uCap ? v * (uCap / n) : v } }
+        let u0 = st.map(\.u)
         try field("U", cls: "volVectorField", dim: "[0 1 -1 0 0 0 0]", values: internalVector(u0, uniform: initialVelocity)) { p in
             let b = p.b
             if let t = try self.patchOptionVelocity(p) { return t }
