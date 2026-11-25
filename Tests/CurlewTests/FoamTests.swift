@@ -682,3 +682,16 @@ private func cubeSurface() -> TriSurface {
         #expect(back.cadConverter == "")
     }
 }
+
+@Suite struct SolveTrustTests {
+    /// The shared solve helper never runs custom OpenFOAM content nobody approved.
+    @Test func customContentNeedsApproval() throws {
+        let mesh = try GmshReader.build(tetCube(2))
+        var s = CaseSetup()
+        s.adopt(mesh: mesh)
+        let st = FoamCustomStage(phase: .beforeSolve, command: "postProcess -func Q")
+        s.openfoam.customStages = [st]
+        #expect(!s.openfoam.activeContent.isEmpty)
+        #expect(throws: SolverError.self) { _ = try ValidationSuite.solve(mesh, s, iterations: 1) }
+    }
+}

@@ -278,7 +278,8 @@ case "pinn":
     if let v = Int(option("--neurons", "")) { ps.neurons = v }
     if args.contains("--solve") && sol == nil {
         // data for hybrid / surrogate modes: an OpenFOAM solution of the same case
-        let cfd = try ValidationSuite.solve(mesh, setup, cores: Int(option("--cores", "1")) ?? 1)
+        requireTrustedContent(setup)     // a case file may carry stages or code that runs programs
+        let cfd = try ValidationSuite.solve(mesh, setup, cores: Int(option("--cores", "1")) ?? 1, allowCustomContent: true)
         print("CFD solution for the data points: OpenFOAM, \(cfd.iteration) iterations")
         if args[1].hasPrefix("cavity-re"), let re = Int(args[1].dropFirst(9)), Benchmarks.ghiaU[re] != nil {
             for c in Benchmarks.compareCavity(cfd, re: re) { print(String(format: "  CFD vs Ghia, %@: max |error| %.4f", c.quantity as NSString, c.maxAbsError)) }

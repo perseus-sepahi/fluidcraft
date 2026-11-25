@@ -58,9 +58,15 @@ public enum ValidationSuite {
     static func fmt(_ v: Double, _ d: Int = 4) -> String { String(format: "%.\(d)f", v) }
 
     /// Solve with OpenFOAM in `directory` (a fresh temporary case when nil) and read the
-    /// results back. Throws when the run fails.
+    /// results back. Throws when the run fails. Custom OpenFOAM content (stages, raw dictionary
+    /// text, extra files, coded conditions) can run programs, so a setup carrying any is refused
+    /// unless the caller has had it approved (`allowCustomContent`).
     public static func solve(_ mesh: Mesh, _ setup: CaseSetup, iterations: Int? = nil, cores: Int = 1,
-                             directory: URL? = nil, log: @escaping (String) -> Void = { _ in }) throws -> Solution {
+                             directory: URL? = nil, allowCustomContent: Bool = false,
+                             log: @escaping (String) -> Void = { _ in }) throws -> Solution {
+        guard allowCustomContent || setup.openfoam.activeContent.isEmpty else {
+            throw SolverError("this case adds custom OpenFOAM content that can run programs; it must be reviewed and approved before it is solved")
+        }
         var s = setup
         if let iterations { s.run.iterations = iterations }
         s.openfoam.cores = max(1, cores)
