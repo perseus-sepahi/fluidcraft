@@ -12,6 +12,17 @@ stages can run any OpenFOAM application. Neither gives Curlew's setup pages a mo
 The list below is what the installed OpenFOAM (ESI v2606) ships and Curlew has no setup pages
 for. Within each area, the features are ordered roughly by how often CFD work needs them.
 
+**Now set up by Curlew:**
+- **Models:** the RAS models SST-SAS, SST Langtry–Menter, GEKO, LRR and SSG; the LES models sigma and DeardorffDiffStress; model coefficients; temperature-dependent and real-gas thermophysics (janaf, hPolynomial, polynomial transport, Peng–Robinson, icoPolynomial, perfectFluid).
+- **Boundary conditions:** turbulentDFSEMInlet, timeVaryingMappedFixedValue, flowRateInletVelocity (volumetric), fanPressure, advective/waveTransmissive and nutkRoughWallFunction.
+- **fvOptions:** rotorDisk, fixedTemperatureConstraint and velocityDampingConstraint.
+- **Mesh:** adaptive refinement (dynamicRefineFvMesh).
+- **Function objects:** exprField, histogram, heatTransferCoeff, age, comfort, LambVector, continuityError, momentum and a configurable fieldAverage.
+- **Run control:** writeControl modes, the pressure reference point, the decomposition split and the GAMG and smoother details.
+- **Post-processing:** a Python interface (`curlew_post`) for analysis OpenFOAM has no interface for.
+
+Those items are no longer gaps; the rest of this list still is.
+
 ## Solvers (applications)
 
 | Area | OpenFOAM applications | What it would add |
@@ -35,63 +46,45 @@ for. Within each area, the features are ordered roughly by how often CFD work ne
   - cyclicAMI sliding interfaces, for transient rotor–stator, fans and turbomachinery. Curlew has steady MRF only.
   - Overset meshes (overPimpleDyMFoam).
   - Mesh morphing and 6-DoF rigid-body motion (floating bodies, valves).
-  - Adaptive refinement (dynamicRefineFvMesh).
   - moveMesh.
 - **Coupled boundaries:** mergeMeshes and stitchMesh. (Periodic cyclicAMI patches, and fan, porous-jump and thin-wall baffles through createBaffles, are now set up by Curlew.)
 - **Mesh generators and editors:** foamyHexMesh, PDRblockMesh, extrudeMesh / extrude2DMesh, refineMesh, mirrorMesh, splitMeshRegions, subsetMesh, transformPoints, renumberMesh, and topoSet / setsToZones as a cell-set editor.
 
 ## Pre-processing
 
-- mapFields / mapFieldsPar: start from a solution on another mesh.
-- setFields / setExprFields beyond Curlew's box, sphere and cylinder patching.
-- applyBoundaryLayer.
+- mapFieldsPar (mapFields, setFields regions and applyBoundaryLayer are set up by Curlew).
+- setExprFields beyond Curlew's box, sphere and cylinder patching.
 - boxTurb / createBoxTurb.
 - viewFactorsGen, for surface-to-surface radiation with the viewFactor model.
 - changeDictionary.
 
 ## Boundary conditions not mapped
 
-- **Inflow profiles:**
-  - Synthetic turbulent inflow for LES (turbulentDFSEMInlet, turbulentDigitalFilterInlet, turbulentInlet).
-  - Profiles from files (timeVaryingMappedFixedValue, fixedProfile).
-  - uniformInletOutlet.
-- **Outlets and inlets:**
-  - Non-reflecting outlets (waveTransmissive, advective).
-  - Volumetric flow inlets (flowRateInletVelocity with a volumetric rate).
-  - prghTotalPressure, and totalPressure with a fixed flow direction.
-- **Walls:** sand-grain rough walls (nutkRoughWallFunction with Ks); Curlew writes only the atmospheric z₀ form.
-- **Fans:** fan curves at inlets and outlets (fanPressure). The fan jump inside the domain is covered by the baffle settings.
+- **Inflow profiles:** turbulentDigitalFilterInlet, turbulentInlet, fixedProfile and uniformInletOutlet (DFSEM and mapped profiles are covered).
+- **Outlets and inlets:** totalPressure with a fixed flow direction (pressureDirectedInletVelocity).
 
 ## Physical models
 
 - **Thermophysics:**
-  - Temperature-dependent properties (polynomial, janaf, Sutherland thermo).
-  - Real gases (Peng–Robinson, a general cubic equation of state).
+  - Tabulated properties (tabulatedTransport, hTabulatedThermo, icoTabulated).
   - Temperature-dependent solids.
   - Multi-species mixtures.
 - **Radiation:** the viewFactor (S2S) and solarLoad models, multi-band absorption and emission, opaqueSolid.
-- **Turbulence:**
-  - Reynolds-stress models (LRR, SSG).
-  - Transition models (kOmegaSSTLM, kkLOmega).
-  - v2f.
-  - kOmegaSSTSAS.
-  - Further LES models (dynamicLagrangian, DeardorffDiffStress).
+- **Turbulence:** EBRSM, kEpsilonPhitF (v2f-type) and the LES dynamicLagrangian model.
 - **fvOptions and constraints:**
-  - rotorDisk: a blade-element rotor model, a better wind-turbine model than actuator disks.
   - radialActuationDiskSource.
   - buoyancyForce / buoyancyEnergy.
   - effectivenessHeatExchangerSource.
   - solidificationMeltingSource.
   - directionalPressureGradientExplicitSource.
-  - fixedTemperatureConstraint.
   - acousticDampingSource.
   - jouleHeatingSource.
   - tabulatedAccelerationSource.
 
 ## Function objects and post-processing
 
-- **Field functions:** streamLine and wallBoundedStreamLine (Curlew traces pathlines itself), plus histogram, fluxSummary, heatTransferCoeff, age, comfort (PMV/PPD), PecletNo, enstrophy, nearWallFields, DMD and extractEulerianParticles.
-- **Sampling and visualisation:** line and point sets (`sets`), runTimePostProcessing images, foamToEnsight and foamToVTK conversion.
+- **Field functions:** wallBoundedStreamLine, fluxSummary (needs faceZones), nearWallFields, DMD (STDMD on transient snapshots) and extractEulerianParticles.
+- **Visualisation:** runTimePostProcessing images (rendered scenes; the library is in the v2606 bundle). Line sets, iso-surfaces, streamlines, foamToVTK and foamToEnsight are set up by Curlew.
 - **Coupling:** externalCoupled co-simulation.
 
 ## Running

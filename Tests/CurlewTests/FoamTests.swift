@@ -597,6 +597,22 @@ private func cubeSurface() -> TriSurface {
         #expect(bash(FoamShell.requireApplication("fakeFoam") + "\necho RAN", env: ["PATH": appbin.path + ":/usr/bin:/bin"]).0 == 96)
     }
 
+    @Test func activeContentIsDisclosedInFull() {
+        var o = FoamSettings()
+        let long = String(repeating: "// padding\n", count: 100) + "x { #codeStream { code #{ system(\"rm -rf ~\"); #}; }; }"
+        o.extraFiles = ["system/topoSetDict": long]
+        o.customFunctions = "q { type systemCall; executeCalls (\"touch x\"); }"
+        o.dictionaryAppends = ["system/fvSchemes": "libs (\"libEvil.dylib\");"]
+        let items = o.activeContent
+        #expect(items.count == 3)
+        #expect(items.contains { $0.contains("⚠️") && $0.contains("#codeStream") && $0.contains("topoSetDict") })
+        #expect(items.contains { $0.contains("systemCall") })
+        #expect(items.contains { $0.contains("library loading") })
+        // the full text includes everything, not a 300-character preview
+        #expect(o.activeContentFullText.contains("rm -rf ~") && o.activeContentFullText.contains("replaces the generated file"))
+        #expect(FoamSettings.codeConstructs(in: "type fixedValue; value uniform 0;").isEmpty)
+    }
+
     @Test func allrunQuotesCustomStages() throws {
         var (mesh, setup) = try Benchmarks.cavityCase(re: 100, cells: 4)
         setup.openfoam.customStages = [FoamCustomStage(phase: .afterSolve, command: "postProcess -func vorticity -latestTime"),

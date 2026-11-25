@@ -176,6 +176,10 @@ final class Workspace {
     var foamProbe = ""
     var foamStatus = ""
     var foamLastCase: URL?
+    /// Python post-processing: last result per script name, and the script running now.
+    var postScriptResults: [String: PostScriptResult] = [:]
+    var postScriptRunning: String?
+    @ObservationIgnored var postScriptJob: PostScriptRun?
     @ObservationIgnored var foamJob: FoamSolve?
     @ObservationIgnored var foamCancel = false
     @ObservationIgnored weak var viewController: ViewController?

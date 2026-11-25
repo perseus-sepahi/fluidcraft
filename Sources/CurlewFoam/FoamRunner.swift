@@ -137,7 +137,7 @@ public enum FoamRunPlan {
     /// The post-processing function objects (through the solver, so its models are loaded) and exports.
     public static func postProcessingStages(_ post: FoamPostProcessing, application: FoamApplication) -> [FoamStage] {
         var st: [FoamStage] = []
-        if !(post.functions.isEmpty && post.lineSamples.isEmpty && post.isoSurfaces.isEmpty && post.streamlineSeedStart == nil) {
+        if post.runsOpenFOAMFunctions {
             st.append(FoamStage(id: "postProcess", title: "Post-process (latest time)", command: application.rawValue,
                                 arguments: ["-postProcess", "-latestTime", "-dict", "system/curlewPostProcess"], parallel: false, logName: "postProcess"))
         }

@@ -17,12 +17,16 @@ struct OpenFOAMPage: View {
             FoamBackendSection(ws: ws)
             do {
                 FoamPhysicsSection(ws: ws)
+                FoamModelDetailsSection(ws: ws)
+                FoamPatchConditionsSection(ws: ws)
+                FoamFvOptionsSection(ws: ws)
                 FoamTimeSection(ws: ws)
                 FoamSchemesSection(ws: ws)
                 FoamSolversSection(ws: ws)
                 FoamCouplingSection(ws: ws)
                 FoamParallelMonitorSection(ws: ws)
                 FoamRunControlSection(ws: ws)
+                FoamAveragingRefinementSection(ws: ws)
                 FoamBafflesSection(ws: ws)
                 FoamExpertSection(ws: ws)
                 FoamCaseFilesSection(ws: ws)
@@ -200,7 +204,14 @@ struct FoamTimeSection: View {
                     NumberField(label: "maxDeltaT", value: $ws.setup.openfoam.maxDeltaT, unit: "s")
                 }
             }
-            IntField(label: "Write every N steps (0 = at the end)", value: $ws.setup.openfoam.writeInterval)
+            Picker("writeControl", selection: $ws.setup.openfoam.writeControl) {
+                ForEach(FoamWriteControl.allCases, id: \.self) { Text($0.displayName).tag($0) }
+            }
+            if [.runTime, .adjustableRunTime, .clockTime, .cpuTime].contains(ws.setup.openfoam.writeControl) {
+                NumberField(label: "Write interval", value: $ws.setup.openfoam.writeEvery, unit: "s")
+            } else {
+                IntField(label: "Write every N steps (0 = at the end)", value: $ws.setup.openfoam.writeInterval)
+            }
             Picker("writeFormat", selection: $ws.setup.openfoam.writeFormat) { Text("binary").tag("binary"); Text("ascii").tag("ascii") }
                 .pickerStyle(.segmented)
             IntField(label: "writePrecision", value: $ws.setup.openfoam.writePrecision)
@@ -293,7 +304,15 @@ struct LinearSolverEditor: View {
             NumberField(label: "tolerance", value: $value.tolerance)
             NumberField(label: "relTol", value: $value.relTol)
             IntField(label: "maxIter", value: $value.maxIter)
-            if value.solver == "GAMG" { IntField(label: "nCellsInCoarsestLevel", value: $value.nCellsInCoarsestLevel) }
+            IntField(label: "minIter", value: $value.minIter)
+            if value.solver == "GAMG" {
+                IntField(label: "nCellsInCoarsestLevel", value: $value.nCellsInCoarsestLevel)
+                IntField(label: "nPreSweeps", value: $value.nPreSweeps)
+                IntField(label: "nPostSweeps", value: $value.nPostSweeps)
+                IntField(label: "mergeLevels", value: $value.mergeLevels)
+                Toggle("cacheAgglomeration", isOn: $value.cacheAgglomeration)
+            }
+            if value.solver == "smoothSolver" { IntField(label: "nSweeps", value: $value.nSweeps) }
         }
     }
 }
@@ -320,6 +339,13 @@ struct FoamCouplingSection: View {
                 NumberField(label: "Outer-loop residual control (0 = off)", value: $ws.setup.openfoam.outerResidual)
             }
             OptionalIntField(label: "nNonOrthogonalCorrectors", value: $ws.setup.openfoam.nNonOrthogonalCorrectors, placeholder: ws.setup.methods.nonOrthogonalCorrectors)
+            Toggle("Pressure reference at a point (pRefPoint)", isOn: Binding(get: { ws.setup.openfoam.pressureReferencePoint != nil },
+                                                                           set: { on in ws.setup.openfoam.pressureReferencePoint = on ? (ws.mesh.map { let c = 0.5 * ($0.bounds.min + $0.bounds.max); return [c.x, c.y, c.z] } ?? [0, 0, 0]) : nil }))
+            if ws.setup.openfoam.pressureReferencePoint != nil {
+                VectorField(label: "pRefPoint", value: Binding(get: { ws.setup.openfoam.pressureReferencePoint ?? [0, 0, 0] }, set: { ws.setup.openfoam.pressureReferencePoint = $0 }), unit: "m")
+            }
+            NumberField(label: "pRefValue (gauge)", value: $ws.setup.openfoam.pressureReferenceValue, unit: "Pa")
+            Text("The reference is used only when no boundary fixes the pressure (closed or periodic domains).").font(.caption).foregroundStyle(.secondary)
         }
         if !app.isTransient {
             Section("Convergence (residualControl, initial residuals; 0 = off)") {
@@ -364,6 +390,22 @@ struct FoamParallelMonitorSection: View {
                 ForEach(["scotch", "hierarchical", "simple", "kahip"], id: \.self) { Text($0).tag($0) }
             }
             .disabled(ws.setup.openfoam.cores < 2)
+            if ["hierarchical", "simple"].contains(ws.setup.openfoam.decomposition) && ws.setup.openfoam.cores > 1 {
+                Toggle("Set the split (n)", isOn: Binding(get: { ws.setup.openfoam.decompositionSplit != nil },
+                                                        set: { ws.setup.openfoam.decompositionSplit = $0 ? [ws.setup.openfoam.cores, 1, 1] : nil }))
+                if let d = ws.setup.openfoam.decompositionSplit, d.count == 3 {
+                    HStack {
+                        ForEach(0..<3, id: \.self) { i in
+                            IntField(label: ["x", "y", "z"][i], value: Binding(get: { ws.setup.openfoam.decompositionSplit?[i] ?? 1 },
+                                                                               set: { ws.setup.openfoam.decompositionSplit?[i] = max(1, $0) }))
+                        }
+                    }
+                    if d[0] * d[1] * d[2] != ws.setup.openfoam.cores { Text("x × y × z must equal the core count.").font(.caption).foregroundStyle(.orange) }
+                }
+                Picker("order", selection: $ws.setup.openfoam.decompositionOrder) {
+                    ForEach(["xyz", "xzy", "yxz", "yzx", "zxy", "zyx"], id: \.self) { Text($0).tag($0) }
+                }
+            }
             Text("More than one core runs decomposePar, mpirun -np N <solver> -parallel and reconstructPar.").font(.caption).foregroundStyle(.secondary)
         }
         Section("Function Objects") {

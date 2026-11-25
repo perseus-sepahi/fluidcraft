@@ -128,6 +128,22 @@ from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`), never in case files.
   - **Periodic patches** (Boundary Conditions › Periodic): any two patches become a `cyclicAMI` pair with a translation (from the patch centroids or given) or a rotation (axis, centre, angle), for matching or non-matching faces. `meanVelocityForce` drives a closed periodic flow.
   - **Baffles** (OpenFOAM page › Baffles and Periodic Flow): fans with a fan curve (Q, Δp), porous jumps (screens, filters, perforated plates: D, I, L) and zero-thickness walls. Curlew writes `createBafflesDict`, with the faces cut by a disk, plate or box, and runs OpenFOAM's `createBaffles` before the solve.
 - OpenFOAM settings exposed in the app: installation and case directory, application, turbulence and wall treatment, endTime/deltaT overrides, adjustable time step (maxCo, maxDeltaT), write interval/format/precision/purgeWrite, every fvSchemes entry, linear solver/smoother/preconditioner/tolerances per equation group, SIMPLE/PIMPLE/PISO correctors, consistent, momentum predictor, outer-loop residual control, residualControl, relaxation factors, cores and decomposition method, function objects, raw boundary conditions for any field on any patch, text appended to any generated dictionary, extra files (e.g. `topoSetDict`) and custom stages (e.g. `topoSet`, `setFields`, `postProcess`). Every case also gets an `Allrun`/`Allclean` that runs from a terminal. Custom stages may only start OpenFOAM applications (programs in `FOAM_APPBIN`, `FOAM_SITE_APPBIN` or `FOAM_USER_APPBIN`), and their words are quoted, never interpreted by a shell. A case opened from disk that carries stages, raw function objects, dictionary text, raw boundary conditions or extra files lists them and asks for approval before Curlew first writes or runs it, because OpenFOAM features such as `systemCall`, `#codeStream` and coded boundary conditions can run programs.
+- More OpenFOAM settings, each tested on OpenFOAM v2606 (`FoamSettingsMoreTests`):
+  - **Turbulence:** k-ω SST-SAS, SST Langtry–Menter transition (ReThetat, γ), GEKO, the LRR and SSG Reynolds-stress models (R, ε), LES sigma and Deardorff differential stress, plus any model coefficient (`<model>Coeffs`, e.g. Cmu, betaStar, Cs).
+  - **Boundary conditions per patch** (OpenFOAM page › Boundary Conditions):
+    - Inlets: volumetric flow rate; synthetic LES inflow (turbulentDFSEMInlet, from the intensity, length scale and inflow height); a velocity profile from a CSV file of points (timeVaryingMappedFixedValue, written to `constant/boundaryData`).
+    - Inlets and outlets: fan curves (fanPressure).
+    - Outlets: non-reflecting (advective, or waveTransmissive for compressible solvers).
+    - Walls: sand-grain roughness (nutkRoughWallFunction with Ks and Cs).
+  - **Thermophysical models:**
+    - Transport: const, Sutherland or polynomial μ(T), κ(T).
+    - Thermo: constant Cp, JANAF NASA polynomials (with an air preset) or polynomial Cp(T).
+    - Equation of state: perfect gas, incompressible perfect gas, ρ = const, perfect fluid, Peng–Robinson real gas, polynomial ρ(T) or Boussinesq.
+    - Combinations OpenFOAM is not compiled for are refused, with a list of the ones it has. The energy form (enthalpy or internal energy) follows what OpenFOAM offers.
+  - **fvOptions:** blade-element rotors (rotorDisk: blade sections and an airfoil table), fixed-temperature zones (fixedTemperatureConstraint) and velocity damping (velocityDampingConstraint).
+  - **Run control and solvers:** writeControl (time steps, simulated, wall-clock or CPU time), pressure reference point and value, hierarchical/simple decomposition split and order, and the linear-solver extras (minIter, nSweeps, GAMG pre/post sweeps, mergeLevels, cacheAgglomeration).
+  - **Time averaging:** fieldAverage with any fields, variance, a start time and a window.
+  - **Adaptive mesh refinement** (dynamicRefineFvMesh) of hexahedral meshes in transient runs, on a field or an OpenFOAM expression such as `mag(U)`.
 - Curlew expressions are translated to OpenFOAM's expression syntax (`x` → `pos().x()`, `t` → `time()`, `^` → `pow`, `if(c,a,b)` → `c ? a : b`, named expressions inlined).
 
 **Density-based solver** (explicit, compressible ideal gas)
@@ -291,6 +307,33 @@ Case files are JSON (`CaseSetup`); any field may be omitted and takes the Fluent
 ```
 
 Case JSON can carry an `"openfoam"` object with any `FoamSettings` key, e.g. `{"general": {"backend": "openfoam"}, "openfoam": {"cores": 8, "turbulence": "kOmegaSSTDDES", "schemes": {"divU": "Gauss LUST grad(U)"}}}`.
+
+**Python post-processing** (Post-Processing › Python scripts, `curlew-cli post-script`). OpenFOAM computes derived fields, samples and expression fields; free-form analysis of a finished solution is what it has no interface for. Curlew exports a time directory of any single-region OpenFOAM case as NumPy arrays and runs your script with the `curlew_post` module:
+
+```python
+import numpy as np
+import curlew_post as cp
+
+case = cp.load()                         # time, cells (centres, volumes), every volume field
+U, p = case["U"], case.pressure_pa()     # (n, 3) and (n,) arrays; pressure in Pa
+inlet = case.patches["inlet"]            # face centres, area vectors, field values on faces
+cp.report("inlet flow", -inlet.flux("U"), "m3/s")          # shown in Curlew
+s, u = case.line([0.5, 0, 0], [0.5, 1, 0], n=200, field="U")
+forces = case.function_object("forceCoeffs")                 # postProcessing/ output as arrays
+case.write_field("speed", np.linalg.norm(U, axis=1))          # new field for ParaView and Curlew
+cp.savefig("profile")                                         # Matplotlib figure shown in Curlew
+```
+
+- **Templates:** patch summary, pressure drop, a line plot, a total-pressure field, the residual history and field statistics.
+- **Where it runs:** scripts run with the Python from Settings › Machine Learning (the PyTorch environment has NumPy and Matplotlib), in isolated mode and never through a shell. A script can run on demand, or after each solve once the case content is approved.
+- **Safety:** scripts saved in a case are listed for approval like any other active content. `curlew-cli post-script case.curlew` needs `--trust-case-content`.
+- **Check:** on the Re = 1000 cavity, a script's vertical-centreline minimum u is −0.3837, against −0.3829 from Ghia et al. (1982).
+
+```bash
+curlew-cli post-script --case ~/CurlewFoam/run1 --script Examples/post-scripts/analysis.py [--time 500]
+curlew-cli post-script result.curlew --name pressure_drop --trust-case-content
+curlew-cli post-script --templates
+```
 
 The app console accepts text commands (`help` lists them), e.g. `/tutorial cavity`, `/solve/iterate 500`, `/display/contour pressure`, `/report/forces`, `/surface/plane mid z 0.5`, `/plot/xy temperature 0 0 0 1 0 0`, `/file/write-case ~/case.curlew`, `/define/backend openfoam`, `/openfoam/set cores 8`, `/openfoam/run`, `/mesh/cad ~/part.step snappy unit=mm`. Setting `CURLEW_SCRIPT="cmd1; cmd2"` runs commands at launch.
 

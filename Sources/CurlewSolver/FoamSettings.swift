@@ -86,8 +86,11 @@ public enum FoamTurbulenceModel: String, Codable, CaseIterable, Sendable {
     // RAS
     case kEpsilon, realizableKE, RNGkEpsilon, LaunderSharmaKE
     case kOmega, kOmegaSST, SpalartAllmaras
+    case kOmegaSSTSAS, kOmegaSSTLM, GEKO
+    /// Reynolds-stress transport (R and epsilon fields).
+    case LRR, SSG
     // LES
-    case Smagorinsky, WALE, kEqn, dynamicKEqn
+    case Smagorinsky, WALE, kEqn, dynamicKEqn, sigma, DeardorffDiffStress
     // DES
     case SpalartAllmarasDES, SpalartAllmarasDDES, SpalartAllmarasIDDES
     case kOmegaSSTDES, kOmegaSSTDDES, kOmegaSSTIDDES
@@ -97,7 +100,8 @@ public enum FoamTurbulenceModel: String, Codable, CaseIterable, Sendable {
     public var family: Family {
         switch self {
         case .fromCurlew, .laminar: return .laminar
-        case .kEpsilon, .realizableKE, .RNGkEpsilon, .LaunderSharmaKE, .kOmega, .kOmegaSST, .SpalartAllmaras: return .RAS
+        case .kEpsilon, .realizableKE, .RNGkEpsilon, .LaunderSharmaKE, .kOmega, .kOmegaSST, .SpalartAllmaras,
+             .kOmegaSSTSAS, .kOmegaSSTLM, .GEKO, .LRR, .SSG: return .RAS
         default: return .LES   // OpenFOAM runs DES through simulationType LES
         }
     }
@@ -113,10 +117,17 @@ public enum FoamTurbulenceModel: String, Codable, CaseIterable, Sendable {
         case .kOmega: return "RAS k-omega (Wilcox 1998)"
         case .kOmegaSST: return "RAS k-omega SST"
         case .SpalartAllmaras: return "RAS Spalart-Allmaras"
+        case .kOmegaSSTSAS: return "RAS k-omega SST-SAS (scale-adaptive)"
+        case .kOmegaSSTLM: return "RAS k-omega SST Langtry-Menter transition"
+        case .GEKO: return "RAS GEKO (generalised k-omega)"
+        case .LRR: return "RAS Reynolds stress LRR"
+        case .SSG: return "RAS Reynolds stress SSG"
         case .Smagorinsky: return "LES Smagorinsky"
         case .WALE: return "LES WALE"
         case .kEqn: return "LES one-equation k"
         case .dynamicKEqn: return "LES dynamic k-equation"
+        case .sigma: return "LES sigma"
+        case .DeardorffDiffStress: return "LES Deardorff differential stress"
         case .SpalartAllmarasDES: return "DES Spalart-Allmaras"
         case .SpalartAllmarasDDES: return "DDES Spalart-Allmaras"
         case .SpalartAllmarasIDDES: return "IDDES Spalart-Allmaras"
@@ -131,9 +142,12 @@ public enum FoamTurbulenceModel: String, Codable, CaseIterable, Sendable {
         switch self {
         case .fromCurlew, .laminar: return []
         case .kEpsilon, .realizableKE, .RNGkEpsilon, .LaunderSharmaKE: return ["k", "epsilon"]
-        case .kOmega, .kOmegaSST, .kOmegaSSTDES, .kOmegaSSTDDES, .kOmegaSSTIDDES: return ["k", "omega"]
+        case .kOmega, .kOmegaSST, .kOmegaSSTDES, .kOmegaSSTDDES, .kOmegaSSTIDDES, .kOmegaSSTSAS, .GEKO: return ["k", "omega"]
+        case .kOmegaSSTLM: return ["k", "omega", "ReThetat", "gammaInt"]
+        case .LRR, .SSG: return ["R", "epsilon"]
+        case .DeardorffDiffStress: return ["R"]
         case .SpalartAllmaras, .SpalartAllmarasDES, .SpalartAllmarasDDES, .SpalartAllmarasIDDES: return ["nuTilda"]
-        case .Smagorinsky, .WALE: return []
+        case .Smagorinsky, .WALE, .sigma: return []
         case .kEqn, .dynamicKEqn: return ["k"]
         }
     }
@@ -210,12 +224,42 @@ public struct FoamLinearSolver: Codable, Sendable, Equatable {
     public var maxIter: Int
     /// GAMG only.
     public var nCellsInCoarsestLevel: Int
+    /// Minimum iterations (0 = may stop before iterating).
+    public var minIter = 0
+    /// smoothSolver sweeps per iteration.
+    public var nSweeps = 1
+    /// GAMG: smoothing sweeps before and after each coarse-level correction, levels merged
+    /// per coarsening step, and whether the agglomeration is kept between solves.
+    public var nPreSweeps = 0
+    public var nPostSweeps = 2
+    public var mergeLevels = 1
+    public var cacheAgglomeration = true
 
     public init(solver: String, smoother: String = "GaussSeidel", preconditioner: String = "DIC",
                 tolerance: Double, relTol: Double, maxIter: Int = 1000, nCellsInCoarsestLevel: Int = 10) {
         self.solver = solver; self.smoother = smoother; self.preconditioner = preconditioner
         self.tolerance = tolerance; self.relTol = relTol; self.maxIter = maxIter
         self.nCellsInCoarsestLevel = nCellsInCoarsestLevel
+    }
+
+    private enum K: String, CodingKey {
+        case solver, smoother, preconditioner, tolerance, relTol, maxIter, nCellsInCoarsestLevel, minIter, nSweeps, nPreSweeps, nPostSweeps, mergeLevels, cacheAgglomeration
+    }
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        solver = c.lenient(.solver, "GAMG"); smoother = c.lenient(.smoother, "GaussSeidel"); preconditioner = c.lenient(.preconditioner, "DIC")
+        tolerance = c.lenient(.tolerance, 1e-7); relTol = c.lenient(.relTol, 0.01); maxIter = c.lenient(.maxIter, 1000)
+        nCellsInCoarsestLevel = c.lenient(.nCellsInCoarsestLevel, 10); minIter = c.lenient(.minIter, 0); nSweeps = c.lenient(.nSweeps, 1)
+        nPreSweeps = c.lenient(.nPreSweeps, 0); nPostSweeps = c.lenient(.nPostSweeps, 2); mergeLevels = c.lenient(.mergeLevels, 1)
+        cacheAgglomeration = c.lenient(.cacheAgglomeration, true)
+    }
+    public func encode(to e: Encoder) throws {
+        var c = e.container(keyedBy: K.self)
+        try c.encode(solver, forKey: .solver); try c.encode(smoother, forKey: .smoother); try c.encode(preconditioner, forKey: .preconditioner)
+        try c.encode(tolerance, forKey: .tolerance); try c.encode(relTol, forKey: .relTol); try c.encode(maxIter, forKey: .maxIter)
+        try c.encode(nCellsInCoarsestLevel, forKey: .nCellsInCoarsestLevel); try c.encode(minIter, forKey: .minIter); try c.encode(nSweeps, forKey: .nSweeps)
+        try c.encode(nPreSweeps, forKey: .nPreSweeps); try c.encode(nPostSweeps, forKey: .nPostSweeps); try c.encode(mergeLevels, forKey: .mergeLevels)
+        try c.encode(cacheAgglomeration, forKey: .cacheAgglomeration)
     }
 
     public static let pressure = FoamLinearSolver(solver: "GAMG", smoother: "GaussSeidel", tolerance: 1e-7, relTol: 0.01, maxIter: 200)
@@ -356,7 +400,37 @@ public struct FoamPostProcessing: Codable, Sendable, Equatable {
     public var exportEnsight = false
     /// Run after every solve (otherwise only with "Run Post-Processing Now").
     public var afterSolve = true
+    /// Fields computed from expressions by OpenFOAM (exprField).
+    public var expressionFields: [FoamExpressionField] = []
+    /// Cell distributions of fields (histogram).
+    public var histograms: [FoamHistogram] = []
+    /// Wall heat-transfer coefficient (heatTransferCoeff).
+    public var heatTransferCoeff = FoamHeatTransferCoeff()
+    /// Python scripts run on the solution through Curlew's `curlew_post` module.
+    public var scripts: [FoamPostScript] = []
     public init() {}
+
+    private enum K: String, CodingKey {
+        case functions, lineSamples, isoSurfaces, streamlineSeedStart, streamlineSeedEnd, streamlineSeeds, exportVTK, exportEnsight, afterSolve
+        case expressionFields, histograms, heatTransferCoeff, scripts
+    }
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self), z = FoamPostProcessing()
+        functions = c.lenient(.functions, []); lineSamples = c.lenient(.lineSamples, []); isoSurfaces = c.lenient(.isoSurfaces, [])
+        streamlineSeedStart = c.lenient(.streamlineSeedStart, nil); streamlineSeedEnd = c.lenient(.streamlineSeedEnd, z.streamlineSeedEnd)
+        streamlineSeeds = c.lenient(.streamlineSeeds, z.streamlineSeeds); exportVTK = c.lenient(.exportVTK, false)
+        exportEnsight = c.lenient(.exportEnsight, false); afterSolve = c.lenient(.afterSolve, true)
+        expressionFields = c.lenient(.expressionFields, []); histograms = c.lenient(.histograms, [])
+        heatTransferCoeff = c.lenient(.heatTransferCoeff, z.heatTransferCoeff); scripts = c.lenient(.scripts, [])
+    }
+    public func encode(to e: Encoder) throws {
+        var c = e.container(keyedBy: K.self)
+        try c.encode(functions, forKey: .functions); try c.encode(lineSamples, forKey: .lineSamples); try c.encode(isoSurfaces, forKey: .isoSurfaces)
+        try c.encodeIfPresent(streamlineSeedStart, forKey: .streamlineSeedStart); try c.encode(streamlineSeedEnd, forKey: .streamlineSeedEnd)
+        try c.encode(streamlineSeeds, forKey: .streamlineSeeds); try c.encode(exportVTK, forKey: .exportVTK); try c.encode(exportEnsight, forKey: .exportEnsight)
+        try c.encode(afterSolve, forKey: .afterSolve); try c.encode(expressionFields, forKey: .expressionFields); try c.encode(histograms, forKey: .histograms)
+        try c.encode(heatTransferCoeff, forKey: .heatTransferCoeff); try c.encode(scripts, forKey: .scripts)
+    }
 
     /// Function objects offered in the app (each runs through `<solver> -postProcess`).
     public static let availableFunctions: [(name: String, title: String)] = [
@@ -365,9 +439,18 @@ public struct FoamPostProcessing: Codable, Sendable, Equatable {
         ("wallShearStress", "Wall shear stress"), ("yPlus", "y⁺"), ("wallHeatFlux", "Wall heat flux (heat transfer)"),
         ("streamFunction", "Stream function (2D)"), ("flowType", "Flow type (shear / rotation)"), ("writeCellCentres", "Cell centres"),
         ("writeCellVolumes", "Cell volumes"), ("turbulenceFields", "Turbulence fields (k, ε, ω, νt, R)"),
+        ("age", "Mean age of air (ventilation; computed during the solve)"), ("comfort", "Thermal comfort PMV / PPD (needs T)"),
+        ("LambVector", "Lamb vector (U × ω)"), ("continuityError", "Continuity error"), ("momentum", "Momentum and angular momentum"),
     ]
+    /// Functions that need the solver's flux and run during the solve (at each write) instead.
+    public static let duringSolveFunctions: Set<String> = ["age"]
+    /// OpenFOAM function objects that run in the post-processing dictionary (not needing settings).
+    public var runsOpenFOAMFunctions: Bool {
+        !(functions.isEmpty && lineSamples.isEmpty && isoSurfaces.isEmpty && streamlineSeedStart == nil && expressionFields.isEmpty
+          && histograms.isEmpty && !heatTransferCoeff.enabled)
+    }
     public var isEmpty: Bool {
-        functions.isEmpty && lineSamples.isEmpty && isoSurfaces.isEmpty && streamlineSeedStart == nil && !exportVTK && !exportEnsight
+        !runsOpenFOAMFunctions && !exportVTK && !exportEnsight && scripts.isEmpty
     }
 }
 
@@ -607,7 +690,35 @@ public struct FoamSettings: Codable, Sendable, Equatable {
     /// Drive a periodic flow at this mean velocity [m/s] (meanVelocityForce); nil = off.
     public var meanVelocity: [Double]? = nil
 
+    // Run control (more)
+    /// writeControl; `writeEvery` is the interval for the time-based modes [s].
+    public var writeControl: FoamWriteControl = .automatic
+    public var writeEvery = 0.1
+    /// Pressure reference where no boundary fixes the pressure (pRefPoint / pRefValue); nil = cell 0, 0.
+    public var pressureReferencePoint: [Double]? = nil
+    public var pressureReferenceValue = 0.0
+    /// hierarchical/simple decomposition: subdomains along x, y, z (nil = split the longest axis first) and order.
+    public var decompositionSplit: [Int]? = nil
+    public var decompositionOrder = "xyz"
+
+    // Models (more)
+    /// Turbulence-model coefficients written into `<model>Coeffs` (e.g. Cmu, betaStar, Cs).
+    public var turbulenceCoefficients: [String: Double] = [:]
+    /// Thermophysical model (thermophysical solvers).
+    public var thermo = FoamThermoSettings()
+    /// OpenFOAM boundary conditions chosen per patch (patch name → options).
+    public var patchOptions: [String: FoamPatchOptions] = [:]
+    /// fvOptions and constraints without a Curlew Cell Zone model.
+    public var fvOptions: [FoamFvOption] = []
+    /// Time averaging of transient runs.
+    public var fieldAverage = FoamFieldAverage()
+    /// Adaptive refinement of hexahedral meshes in transient runs.
+    public var adaptiveRefinement = FoamAdaptiveRefinement()
+
     public init() {}
+
+    /// Options for one patch (defaults when none were set).
+    public func options(forPatch name: String) -> FoamPatchOptions { patchOptions[name] ?? FoamPatchOptions() }
 
     /// Setting strings written into OpenFOAM dictionaries as keywords (schemes, solvers, LES
     /// filter, decomposition) that contain anything but words, numbers, spaces, parentheses,
@@ -625,7 +736,16 @@ public struct FoamSettings: Codable, Sendable, Equatable {
                        ("interpolation", sc.interpolation), ("wallDist", sc.wallDistance)] { check("scheme \(n)", v) }
         check("LES delta", lesDelta)
         check("decomposition", decomposition)
+        check("decomposition order", decompositionOrder)
         check("write format", writeFormat)
+        for k in turbulenceCoefficients.keys where !(k.first?.isLetter ?? false) || !k.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) {
+            bad.append("turbulence coefficient name: \(k.prefix(60))")
+        }
+        for e in postProcessing.expressionFields where !e.isSafe { bad.append("expression \(e.name): \(e.expression.prefix(60))") }
+        if adaptiveRefinement.enabled && adaptiveRefinement.isExpression
+            && !FoamExpressionField(name: "refinementIndicator", expression: adaptiveRefinement.field).isSafe {
+            bad.append("refinement expression: \(adaptiveRefinement.field.prefix(60))")
+        }
         for (n, l) in [("pressure", pressureSolver), ("velocity", velocitySolver), ("turbulence", turbulenceSolver), ("energy", energySolver)] {
             check("\(n) solver", l.solver); check("\(n) smoother", l.smoother); check("\(n) preconditioner", l.preconditioner)
         }
@@ -637,17 +757,56 @@ public struct FoamSettings: Codable, Sendable, Equatable {
     /// raw boundary conditions (e.g. `codedFixedValue`) and extra files. A case opened from
     /// disk shows these to the user before it is run. Empty when there are none.
     public var activeContent: [String] {
-        var out: [String] = []
+        activeContentItems.map { item in
+            let code = FoamSettings.codeConstructs(in: item.text)
+            let preview = item.text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(300)
+            let python = item.title.hasPrefix("Python")
+            return (python ? "⚠️ runs Python code — " : (code.isEmpty ? "" : "⚠️ runs code (\(code.joined(separator: ", "))) — ")) + item.title + (preview.isEmpty ? "" : ": \(preview)")
+        }
+    }
+
+    /// Every custom item with its full text (for a complete review before running).
+    public var activeContentItems: [(title: String, text: String)] {
+        var out: [(String, String)] = []
         for c in customStages where !c.command.trimmingCharacters(in: .whitespaces).isEmpty {
-            out.append("Stage (\(c.phase == .beforeSolve ? "before" : "after") solve): \(c.command)")
+            out.append(("Stage (\(c.phase == .beforeSolve ? "before" : "after") solve)", c.command))
         }
-        if !customFunctions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { out.append("Function objects: \(customFunctions.prefix(300))") }
+        if !customFunctions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { out.append(("Function objects in controlDict", customFunctions)) }
         for (p, t) in dictionaryAppends.sorted(by: { $0.key < $1.key }) where !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            out.append("Appended to \(p): \(t.prefix(300))")
+            out.append(("Appended to \(p)", t))
         }
-        for o in patchOverrides { out.append("Raw boundary condition \(o.field) on \(o.patch): \(o.text.prefix(200))") }
-        for p in extraFiles.keys.sorted() { out.append("Extra file \(p)") }
-        for p in fileOverrides.keys.sorted() { out.append("Replaced file \(p): \(fileOverrides[p]!.prefix(200))") }
+        for o in patchOverrides { out.append(("Raw boundary condition \(o.field) on \(o.patch)", o.text)) }
+        // extra files are written after the generated ones, so one may also replace a generated file
+        for p in extraFiles.keys.sorted() { out.append(("Extra file \(p) (replaces the generated file of that name, if any)", extraFiles[p]!)) }
+        for p in fileOverrides.keys.sorted() { out.append(("Replaced file \(p)", fileOverrides[p]!)) }
+        // post-processing scripts are Python programs: they always need the user's approval
+        for sc in postProcessing.scripts where !sc.code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            out.append(("Python post-processing script \(sc.name)\(sc.afterSolve ? " (runs after the solve)" : "")", sc.code))
+        }
         return out
+    }
+
+    /// All custom content as one text, every item in full.
+    public var activeContentFullText: String {
+        activeContentItems.map { item in
+            let code = FoamSettings.codeConstructs(in: item.text)
+            let python = item.title.hasPrefix("Python")
+            return "=== \(item.title)" + (python ? "   ⚠️ runs Python code" : (code.isEmpty ? "" : "   ⚠️ runs code: \(code.joined(separator: ", "))")) + "\n" + item.text
+        }.joined(separator: "\n\n")
+    }
+
+    /// OpenFOAM constructs in `text` that compile, load or run code: dictionary directives that
+    /// compile C++ or evaluate, coded conditions and function objects, system calls, libraries.
+    public static func codeConstructs(in text: String) -> [String] {
+        let checks: [(String, String)] = [
+            ("#codeStream", "#codestream"), ("#calc", "#calc"), ("#include", "#include"), ("#eval", "#eval"),
+            ("systemCall", "systemcall"), ("coded condition or function object", "coded"), ("code block", "code"),
+            ("library loading (libs)", "libs"), ("$ variable expansion", "$"),
+        ]
+        let t = text.lowercased()
+        return checks.filter { needle in
+            needle.1 == "code" ? t.range(of: #"\bcode(include|options|libs)?\b"#, options: .regularExpression) != nil
+                               : t.contains(needle.1)
+        }.map(\.0)
     }
 }

@@ -18,6 +18,8 @@ public final class FoamSolve: @unchecked Sendable {
         public var seconds: Double
         public var loadedTime: String?
         public var metrics: FoamRunMetrics
+        /// Python post-processing scripts run after the solve ("after the solve" scripts).
+        public var scripts: [PostScriptResult] = []
     }
 
     public let mesh: Mesh
@@ -119,7 +121,11 @@ public final class FoamSolve: @unchecked Sendable {
         var outcome = Outcome(solver: nil, report: report, caseDirectory: dir, residuals: residuals, reports: reports,
                               failure: failure, seconds: Date().timeIntervalSince(t0), loadedTime: nil, metrics: r.metrics)
         let hasResults = (FoamTimes.latest(dir)?.value ?? 0) > 0
-        if o.loadResults && hasResults {
+        let refined = o.adaptiveRefinement.enabled && transient
+        if refined && o.loadResults && hasResults {
+            log("Adaptive refinement changed the mesh: open the results in ParaView or with a Python script (they read the refined mesh); Curlew's pages keep the original mesh.")
+        }
+        if o.loadResults && hasResults && !refined {
             do {
                 let (solver, time) = try FoamSolve.load(caseDirectory: dir, mesh: mesh, setup: setup)
                 solver.restoreHistory(residuals: residuals, reports: reports)
@@ -130,6 +136,10 @@ public final class FoamSolve: @unchecked Sendable {
             } catch {
                 log("Could not load OpenFOAM results: \(error)")
             }
+        }
+        if failure == nil && hasResults && setup.openfoam.postProcessing.scripts.contains(where: { $0.afterSolve }) {
+            // the case content (scripts included) was approved before the run started
+            outcome.scripts = PostScriptRun.runAfterSolve(setup: setup, caseDirectory: dir, log: log)
         }
         return outcome
     }

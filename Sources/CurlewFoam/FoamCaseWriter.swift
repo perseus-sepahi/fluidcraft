@@ -128,7 +128,7 @@ public enum FoamCaseWriter {
         }
         var t = FoamFile.header("dictionary", "curlewPostProcess", location: "system") + "functions\n{\n"
         let known = Set(FoamPostProcessing.availableFunctions.map(\.name))
-        for f in pp.functions where known.contains(f) {
+        for f in pp.functions where known.contains(f) && !FoamPostProcessing.duringSolveFunctions.contains(f) {
             let lib = ["yPlus", "wallShearStress", "wallHeatFlux", "turbulenceFields", "CourantNo", "PecletNo", "MachNo", "vorticity", "Q", "Lambda2",
                        "enstrophy", "streamFunction", "flowType", "writeCellCentres", "writeCellVolumes"].contains(f) ? "fieldFunctionObjects" : "fieldFunctionObjects"
             t += "    \(f)\n    {\n        type            \(f);\n        libs            (\(lib));\n"
@@ -180,6 +180,30 @@ public enum FoamCaseWriter {
                 }
 
             """
+        }
+        for e in pp.expressionFields where e.isSafe {
+            guard let n = Writer.word(e.name) else { continue }
+            let reads = e.referencedFields.compactMap(Writer.word)
+            t += "    \(n)\n    {\n        type            exprField;\n        libs            (fieldFunctionObjects);\n        field           \(n);\n        expression      \"\(e.expression)\";\n        action          new;\n        autowrite       true;\n"
+            if !reads.isEmpty { t += "        readFields      (\(reads.joined(separator: " ")));\n" }
+            t += "    }\n"
+        }
+        for h in pp.histograms {
+            guard let f = Writer.word(h.field) else { continue }
+            t += "    histogram_\(f)\n    {\n        type            histogram;\n        libs            (fieldFunctionObjects);\n        field           \(f);\n        model           equalBinWidth;\n        nBins           \(max(2, h.bins));\n        setFormat       csv;\n    }\n"
+        }
+        let htc = pp.heatTransferCoeff
+        if htc.enabled && (thermal ?? app.isThermal) {
+            let walls = htc.patches.compactMap { Writer.word(MeshWriters.foamName($0)) }
+            let patchList = walls.isEmpty ? "(\".*\")" : "(" + walls.joined(separator: " ") + ")"
+            var model = "        htcModel        \(htc.model.rawValue);\n"
+            switch htc.model {
+            case .fixedReferenceTemperature: model += "        TRef            \(FoamNum.s(htc.referenceTemperature));\n"
+            case .localReferenceTemperature: break
+            case .ReynoldsAnalogy:
+                model += "        UInf            (\(FoamNum.s(s.reference.velocity)) 0 0);\n        rho             rhoInf;\n        rhoInf          \(FoamNum.s(s.reference.density));\n        Cp              CpInf;\n        CpInf           \(FoamNum.s(fluidMaterial(s)?.specificHeat ?? 1005));\n"
+            }
+            t += "    heatTransferCoeff\n    {\n        type            heatTransferCoeff;\n        libs            (fieldFunctionObjects);\n        field           T;\n        patches         \(patchList);\n" + model + "    }\n"
         }
         if let a = pp.streamlineSeedStart, a.count == 3, pp.streamlineSeedEnd.count == 3 {
             t += """
@@ -551,6 +575,97 @@ final class Writer {
         o.patchOverrides.first { ($0.patch == p.zone.name || $0.patch == p.name) && $0.field == field }?.text
     }
 
+    // MARK: Per-patch OpenFOAM conditions (OpenFOAM page › Boundary Conditions)
+
+    /// `<model>Coeffs { … }` with the user's turbulence-model coefficients.
+    var coefficientBlock: String {
+        let c = o.turbulenceCoefficients.filter { k, v in Writer.word(k) != nil && v.isFinite }
+        guard !c.isEmpty else { return "" }
+        return "    \(turb.rawValue)Coeffs\n    {\n" + c.sorted { $0.key < $1.key }.map { "        \($0.key.padding(toLength: 15, withPad: " ", startingAt: 0)) \(FoamNum.s($0.value));\n" }.joined() + "    }\n"
+    }
+
+    func patchMeanVelocity(_ p: Patch) -> Vec3 {
+        var a = 0.0, u = Vec3(0, 0, 0)
+        for i in 0..<p.zone.count { let f = p.zone.start + i; a += m.faceAreaMag[f]; u = u + m.faceAreaMag[f] * bcd.uSpec[p.first + i] }
+        return a > 0 ? (1 / a) * u : u
+    }
+
+    /// Velocity condition chosen on the OpenFOAM page for this patch, or nil for Curlew's own.
+    func patchOptionVelocity(_ p: Patch) throws -> String? {
+        let po = o.options(forPatch: p.zone.name)
+        guard po.condition != .automatic, po.condition.applies(to: p.kind) else { return nil }
+        let initial = vecValues(p) { bcd.uSpec[$0] }
+        switch po.condition {
+        case .volumetricFlowRate:
+            return "        type            flowRateInletVelocity;\n        volumetricFlowRate \(FoamNum.s(po.volumetricFlowRate));\n        extrapolateProfile no;\n        value           \(initial);\n"
+        case .syntheticTurbulence:
+            if !app.isTransient { report.warnings.append("Synthetic inflow on \(p.zone.name) needs a transient application (LES/DES); \(app.rawValue) is steady.") }
+            let u = patchMeanVelocity(p)
+            let k = 1.5 * pow(po.turbulenceIntensity * norm(u), 2)
+            let r = FoamNum.s(2 * k / 3)
+            return """
+                    type            turbulentDFSEMInlet;
+                    delta           \(FoamNum.s(po.delta));
+                    R               uniform (\(r) 0 0 \(r) 0 \(r));
+                    U               uniform \(FoamNum.vec(u));
+                    L               uniform \(FoamNum.s(po.lengthScale));
+                    nCellPerEddy    1;
+                    value           \(initial);
+
+            """
+        case .profileFromFile:
+            try writeBoundaryProfile(p, file: po.profileFile)
+            return "        type            timeVaryingMappedFixedValue;\n        offset          (0 0 0);\n        setAverage      off;\n        mapMethod       planarInterpolation;\n        value           \(initial);\n"
+        default:
+            return nil
+        }
+    }
+
+    /// Pressure condition chosen on the OpenFOAM page (kinematic or absolute `p`), or nil.
+    func patchOptionPressure(_ p: Patch, fixed: String) -> String? {
+        let po = o.options(forPatch: p.zone.name)
+        guard po.condition.applies(to: p.kind) else { return nil }
+        switch po.condition {
+        case .fanCurve:
+            // kinematic solvers: pressure rise per unit density
+            let scale = thermal ? 1 : 1 / rho
+            let pts = po.fanCurve.filter { $0.count == 2 }.map { "(\(FoamNum.s($0[0])) \(FoamNum.s($0[1] * scale)))" }
+            guard pts.count >= 2 else { report.warnings.append("Fan curve on \(p.zone.name) needs two or more points; the Curlew condition is used."); return nil }
+            return "        type            fanPressure;\n        direction       \(p.kind == .pressureInlet ? "in" : "out");\n        fanCurve        table (\(pts.joined(separator: " ")));\n        p0              \(fixed);\n        value           \(fixed);\n"
+        case .nonReflecting:
+            guard app.isTransient else {
+                report.warnings.append("The non-reflecting outlet \(p.zone.name) needs a transient application; it is a fixed pressure in \(app.rawValue).")
+                return nil
+            }
+            let far = po.farFieldDistance > 0 ? "        fieldInf        \(fixed.replacingOccurrences(of: "uniform ", with: ""));\n        lInf            \(FoamNum.s(po.farFieldDistance));\n" : ""
+            if thermal {
+                let gamma = mat.specificHeat / max(mat.specificHeat - mat.gasConstant, 1e-12)
+                return "        type            waveTransmissive;\n        field           p;\n        psi             thermo:psi;\n        gamma           \(FoamNum.s(gamma));\n" + far + "        value           \(fixed);\n"
+            }
+            return "        type            advective;\n        phi             phi;\n" + far + "        value           \(fixed);\n"
+        default:
+            return nil
+        }
+    }
+
+    /// constant/boundaryData/<patch>/{points, 0/U} from a CSV of x, y, z, Ux, Uy, Uz.
+    func writeBoundaryProfile(_ p: Patch, file: String) throws {
+        let path = (file as NSString).expandingTildeInPath
+        guard !path.isEmpty, let text = try? String(contentsOfFile: path, encoding: .utf8) else {
+            throw SolverError("Velocity profile for \(p.zone.name): cannot read '\(file)' (CSV with x, y, z, Ux, Uy, Uz).")
+        }
+        var pts: [Vec3] = [], vel: [Vec3] = []
+        for line in text.split(whereSeparator: \.isNewline) {
+            let v = line.split(whereSeparator: { $0 == "," || $0 == " " || $0 == "\t" || $0 == ";" }).compactMap { Double($0) }
+            guard v.count >= 6, v.prefix(6).allSatisfy(\.isFinite) else { continue }    // header and comment lines
+            pts.append(Vec3(v[0], v[1], v[2])); vel.append(Vec3(v[3], v[4], v[5]))
+        }
+        guard pts.count >= 3 else { throw SolverError("Velocity profile for \(p.zone.name): '\(file)' has \(pts.count) data rows; planar interpolation needs at least 3 points spread over the patch.") }
+        let base = "constant/boundaryData/\(p.name)"
+        try put("\(base)/points", "// points of the inflow profile (from \((path as NSString).lastPathComponent))\n\(pts.count)\n(\n" + pts.map(FoamNum.vec).joined(separator: "\n") + "\n)\n")
+        try put("\(base)/0/U", "// velocity at the profile points\n\(vel.count)\n(\n" + vel.map(FoamNum.vec).joined(separator: "\n") + "\n)\n")
+    }
+
     // MARK: Expressions
 
     /// The OpenFOAM expression for a quantity that varies in time (nil when it is constant or
@@ -690,7 +805,7 @@ final class Writer {
 
     /// Writes `<time>/<name>`. `patch` returns the entries inside the patch braces;
     /// constraint patches (empty, symmetry) are handled here.
-    func field(_ name: String, cls: String, dim: String, values internalValues: String, patch: (Patch) -> String) throws {
+    func field(_ name: String, cls: String, dim: String, values internalValues: String, patch: (Patch) throws -> String) throws {
         var t = FoamFile.header(cls, name, location: timeDir)
         t += "dimensions      \(dim);\n\ninternalField   \(internalValues);\n\nboundaryField\n{\n"
         for p in patches {
@@ -699,7 +814,7 @@ final class Writer {
             else if p.kind == .empty { body = "        type            empty;\n" }
             else if periodicNames.contains(p.zone.name) { body = "        type            cyclicAMI;\n" }
             else if p.kind == .symmetry { body = "        type            \(MeshWriters.foamPatchType(.symmetry));\n" }
-            else { body = patch(p) }
+            else { body = try patch(p) }
             t += "    \(p.name)\n    {\n" + body + "    }\n"
         }
         t += "}\n"
@@ -726,6 +841,7 @@ final class Writer {
         let u0 = st.map { state in state.u.map { v -> Vec3 in let n = norm(v); return n > uCap ? v * (uCap / n) : v } }
         try field("U", cls: "volVectorField", dim: "[0 1 -1 0 0 0 0]", values: internalVector(u0, uniform: initialVelocity)) { p in
             let b = p.b
+            if let t = try self.patchOptionVelocity(p) { return t }
             switch p.kind {
             case .wall:
                 if b.shearCondition == .specifiedShear || self.s.models.viscous == .inviscid { return "        type            slip;\n" }
@@ -797,6 +913,7 @@ final class Writer {
         } else {
             let superOutlet = supersonic
             try field("p", cls: "volScalarField", dim: pDim, values: pInternal) { p in
+                if let t = self.patchOptionPressure(p, fixed: fixedP(p)) { return t }
                 switch p.kind {
                 case .pressureOutlet where superOutlet: return "        type            zeroGradient;\n"
                 case .pressureFarField where superOutlet:
@@ -952,10 +1069,50 @@ final class Writer {
             try turbField("nuTilda", "[0 2 -1 0 0 0 0]", cells: st?.nuTilda, uniform: initial == nil ? (s.initialization.method == .standard && ini.computeFrom.isEmpty ? ini.modifiedTurbulentViscosity : inletAverage { bcd.nuTilda.value[$0] }) : 0,
                           inlet: { self.bcd.nuTilda.value[$0] }, wall: "        type            fixedValue;\n        value           uniform 0;\n")
         }
+        if turb.fields.contains("ReThetat") {
+            // Langtry–Menter correlation of the transition onset Reynolds number with the inlet turbulence intensity
+            func reTheta(_ bf: Int) -> Double {
+                let u = max(norm(self.bcd.uSpec[bf]), 1e-6)
+                let tu = max(100 * (2 * max(self.bcd.k.value[bf], 0) / 3).squareRoot() / u, 0.027)
+                return tu <= 1.3 ? 1173.51 - 589.428 * tu + 0.2196 / (tu * tu) : 331.5 * pow(tu - 0.5658, -0.671)
+            }
+            try turbField("ReThetat", "[0 0 0 0 0 0 0]", cells: nil, uniform: inletAverage(reTheta), inlet: reTheta,
+                          wall: "        type            zeroGradient;\n")
+            try turbField("gammaInt", "[0 0 0 0 0 0 0]", cells: nil, uniform: 1, inlet: { _ in 1 }, wall: "        type            zeroGradient;\n")
+        }
+        if turb.fields.contains("R") {
+            func rr(_ k: Double) -> String { let d = FoamNum.s(2 * max(k, 0) / 3); return "(\(d) 0 0 \(d) 0 \(d))" }
+            func rlist(_ p: Patch) -> String {
+                let n = p.zone.count
+                guard n > 0 else { return "uniform (0 0 0 0 0 0)" }
+                let vals = (0..<n).map { rr(self.bcd.k.value[p.zone.start - m.nInternalFaces + $0]) }
+                return Set(vals).count == 1 ? "uniform \(vals[0])" : "nonuniform List<symmTensor> \(n)(" + vals.joined(separator: " ") + ")"
+            }
+            let k0 = initial == nil ? (s.initialization.method == .standard && ini.computeFrom.isEmpty ? ini.k : inletAverage { bcd.k.value[$0] }) : 0
+            let rInternal: String
+            if let kc = st?.k, kc.count == m.nCells { rInternal = "nonuniform List<symmTensor> \(m.nCells)(" + kc.map(rr).joined(separator: " ") + ")" }
+            else { rInternal = "uniform \(rr(k0))" }
+            let lesR = turb.family == .LES
+            try field("R", cls: "volSymmTensorField", dim: "[0 2 -2 0 0 0 0]", values: rInternal) { p in
+                switch p.kind {
+                case .wall: return lesR ? "        type            fixedValue;\n        value           uniform (0 0 0 0 0 0);\n"
+                                        : "        type            kqRWallFunction;\n        value           uniform (0 0 0 0 0 0);\n"
+                case .velocityInlet, .massFlowInlet, .pressureInlet:
+                    return "        type            fixedValue;\n        value           \(rlist(p));\n"
+                default:
+                    return "        type            inletOutlet;\n        inletValue      \(rlist(p));\n        value           \(rlist(p));\n"
+                }
+            }
+        }
         let rhoCells = st?.rho
         let nutCells = st.map { state in (0..<m.nCells).map { state.muT[$0] / max(rhoCells?[$0] ?? rho, 1e-300) } }
         let nutWall = nutWallFunction
+        let kBased = turb.fields.contains("k") || turb.fields.contains("R")
         try field("nut", cls: "volScalarField", dim: "[0 2 -1 0 0 0 0]", values: internalScalar(nutCells, uniform: 0)) { p in
+            let po = self.o.options(forPatch: p.zone.name)
+            if p.kind == .wall && po.condition == .roughWall && po.roughnessHeight > 0 && kBased {
+                return "        type            nutkRoughWallFunction;\n        Ks              uniform \(FoamNum.s(po.roughnessHeight));\n        Cs              uniform \(FoamNum.s(po.roughnessConstant));\n        value           uniform 0;\n"
+            }
             if p.kind == .wall && p.b.roughnessLength > 0 {
                 // rough ground: atmospheric log law with aerodynamic roughness z0
                 return "        type            atmNutkWallFunction;\n        boundNut        false;\n        z0              uniform \(FoamNum.s(p.b.roughnessLength));\n        value           uniform 0;\n"
@@ -974,7 +1131,7 @@ final class Writer {
         case .laminar:
             t += "simulationType  laminar;\n"
         case .RAS:
-            t += "simulationType  RAS;\n\nRAS\n{\n    RASModel        \(turb.rawValue);\n    turbulence      on;\n    printCoeffs     on;\n}\n"
+            t += "simulationType  RAS;\n\nRAS\n{\n    RASModel        \(turb.rawValue);\n    turbulence      on;\n    printCoeffs     on;\n\(turb == .kOmegaSSTSAS ? "    delta           cubeRootVol;\n    cubeRootVolCoeffs { deltaCoeff 1; }\n" : "")\(coefficientBlock)}\n"
         case .LES:
             // IDDES models only accept the IDDES filter width.
             let delta = turb.rawValue.hasSuffix("IDDES") ? "IDDESDelta" : o.lesDelta
@@ -987,6 +1144,7 @@ final class Writer {
                 turbulence      on;
                 printCoeffs     on;
                 delta           \(delta);
+            \(coefficientBlock)
 
                 IDDESDeltaCoeffs
                 {
@@ -1143,7 +1301,7 @@ final class Writer {
                 """
             }
             if let q = c.energySource.constantValue, q != 0, solvesT {
-                let (fieldName, value) = boussinesq ? ("T", q / (rho * mat.specificHeat)) : (compressible ? "e" : "h", q)
+                let (fieldName, value) = boussinesq ? ("T", q / (rho * mat.specificHeat)) : (internalEnergy ? "e" : "h", q)
                 opts += """
                 energySource_\(name)
                 {
@@ -1157,7 +1315,7 @@ final class Writer {
                 """
             }
             if case .expression = c.energySource, solvesT {
-                let (fieldName, factor) = boussinesq ? ("T", 1 / (rho * mat.specificHeat)) : (compressible ? "e" : "h", 1.0)
+                let (fieldName, factor) = boussinesq ? ("T", 1 / (rho * mat.specificHeat)) : (internalEnergy ? "e" : "h", 1.0)
                 opts += """
                 energySource_\(name)
                 {
@@ -1246,10 +1404,116 @@ final class Writer {
 
             """
         }
+        opts += try extraFvOptions()
         if !opts.isEmpty { try put("constant/fvOptions", FoamFile.header("dictionary", "fvOptions", location: "constant") + opts) }
+        try writeDynamicMeshDict()
+    }
+
+    /// fvOptions and constraints from OpenFOAM page › Sources and Constraints.
+    func extraFvOptions() throws -> String {
+        var t = ""
+        for opt in o.fvOptions {
+            guard let name = Writer.word(opt.name) else { report.warnings.append("fvOption '\(opt.name)' skipped: not an OpenFOAM word."); continue }
+            var selection = "    selectionMode   all;\n"
+            if !opt.zone.isEmpty {
+                guard m.cellZones.contains(where: { $0.name == opt.zone }) else { throw SolverError("fvOption \(opt.name): cell zone '\(opt.zone)' is not in the mesh.") }
+                selection = "    selectionMode   cellZone;\n    cellZone        \(MeshWriters.foamName(opt.zone));\n"
+            }
+            switch opt.kind {
+            case .fixedTemperature:
+                guard thermal else { report.warnings.append("fvOption \(opt.name): fixedTemperatureConstraint needs a thermophysical solver; skipped."); continue }
+                t += "\(name)\n{\n    type            fixedTemperatureConstraint;\n" + selection + "    mode            uniform;\n    temperature     constant \(FoamNum.s(opt.temperature));\n}\n\n"
+            case .velocityDamping:
+                t += "\(name)\n{\n    type            velocityDampingConstraint;\n" + selection + "    UMax            \(FoamNum.s(opt.maximumVelocity));\n}\n\n"
+            case .rotorDisk:
+                guard !opt.zone.isEmpty else { throw SolverError("Rotor \(opt.name): choose the cell zone the rotor sweeps.") }
+                let r = opt.rotor
+                let sections = r.sections.filter { $0.count == 3 }.map { "            (profile1 (\(FoamNum.s($0[0])) \(FoamNum.s($0[1])) \(FoamNum.s($0[2]))))" }
+                let profile = r.profile.filter { $0.count == 3 }.map { "                    (\(FoamNum.s($0[0])) \(FoamNum.s($0[1])) \(FoamNum.s($0[2])))" }
+                guard sections.count >= 2, profile.count >= 2 else { throw SolverError("Rotor \(opt.name): needs at least two blade sections and two airfoil table rows.") }
+                if thermal { report.warnings.append("Rotor \(opt.name): rotorDisk is written for an incompressible U equation.") }
+                t += """
+                \(name)
+                {
+                    type            rotorDisk;
+                \(selection)    fields          (U);
+                    nBlades         \(max(1, r.blades));
+                    tipEffect       \(FoamNum.s(r.tipEffect));
+                    inletFlowType   local;
+                    geometryMode    specified;
+                    origin          \(FoamNum.vec(r.origin));
+                    axis            \(FoamNum.vec(r.axis));
+                    refDirection    \(FoamNum.vec(r.referenceDirection));
+                    rpm             \(FoamNum.s(r.rpm));
+                    trimModel       fixedTrim;
+                    rhoRef          \(FoamNum.s(rho));
+                    rhoInf          \(FoamNum.s(rho));
+                    fixedTrimCoeffs { theta0 \(FoamNum.s(r.collectivePitch)); theta1c 0; theta1s 0; }
+                    flapCoeffs { beta0 0; beta1c 0; beta2s 0; }
+                    blade
+                    {
+                        data
+                        (
+                \(sections.joined(separator: "\n"))
+                        );
+                    }
+                    profiles
+                    {
+                        profile1
+                        {
+                            type    lookup;
+                            data
+                            (
+                \(profile.joined(separator: "\n"))
+                            );
+                        }
+                    }
+                }
+
+
+                """
+            }
+        }
+        return t
+    }
+
+    /// constant/dynamicMeshDict for adaptive refinement (dynamicRefineFvMesh).
+    func writeDynamicMeshDict() throws {
+        let a = o.adaptiveRefinement
+        guard a.enabled, region == nil else { return }
+        guard app.isTransient else { report.warnings.append("Adaptive refinement needs a transient application; \(app.rawValue) is steady, so it is off."); return }
+        let hist = m.cellShapeHistogram()
+        if hist.contains(where: { $0.key != "hexahedra" && $0.value > 0 }) {
+            report.warnings.append("Adaptive refinement (hexRef8) only refines hexahedra; this mesh also has \(hist.filter { $0.key != "hexahedra" && $0.value > 0 }.keys.sorted().joined(separator: ", ")).")
+        }
+        let fieldName = a.isExpression ? "refinementIndicator" : (Writer.word(a.field) ?? "p")
+        let t = FoamFile.header("dictionary", "dynamicMeshDict", location: "constant") + """
+        dynamicFvMesh   dynamicRefineFvMesh;
+
+        dynamicRefineFvMeshCoeffs
+        {
+            refineInterval  \(max(1, a.refineInterval));
+            field           \(fieldName);
+            lowerRefineLevel \(FoamNum.s(a.lowerLevel));
+            upperRefineLevel \(FoamNum.s(a.upperLevel));
+            unrefineLevel   \(FoamNum.s(a.unrefineLevel));
+            nBufferLayers   \(max(1, a.bufferLayers));
+            maxRefinement   \(max(1, a.maxRefinement));
+            maxCells        \(max(1, a.maxCells));
+            correctFluxes
+            (
+                (phi none)
+                (nHatf none)
+            );
+            dumpLevel       true;
+        }
+
+        """
+        try put("constant/dynamicMeshDict", t)
     }
 
     func writeThermophysical() throws {
+        if !o.thermo.isAutomatic { return try writeThermophysicalModel() }
         let psi = compressible && mat.densityMethod == .idealGas
         let eos: String
         var eosCoeffs: String
@@ -1298,9 +1562,104 @@ final class Writer {
         try put("constant/thermophysicalProperties", t)
     }
 
+    /// thermophysicalProperties from OpenFOAM page › Thermophysical Model (temperature-dependent
+    /// properties, real-gas equations of state). Combinations OpenFOAM is not compiled for are refused.
+    func writeThermophysicalModel() throws {
+        let th = o.thermo
+        let (transport, eos) = thermoChoice
+        let thermoName = th.thermo.rawValue
+        let (transport0, eos0) = (transport, eos)
+        let energy = internalEnergy ? "sensibleInternalEnergy" : "sensibleEnthalpy"
+        let key = "\(transport0),\(energy),\(thermoName),\(eos0)"
+        let psi = compressible && (eos == "perfectGas" || eos == "PengRobinsonGas") && FoamThermoSettings.psiThermoTypes.contains(key)
+        guard psi || FoamThermoSettings.rhoThermoTypes.contains(key) else {
+            let near = FoamThermoSettings.rhoThermoTypes.filter { $0.hasSuffix(",\(eos)") && $0.contains(energy) }.sorted()
+            throw SolverError("OpenFOAM has no thermophysical model \(transport) transport + \(thermoName) thermo + \(eos) (\(energy)). "
+                              + (near.isEmpty ? "" : "With \(eos) it has: " + near.map { $0.replacingOccurrences(of: ",\(energy),", with: " + ").replacingOccurrences(of: ",\(eos)", with: "") }.joined(separator: "; ") + "."))
+        }
+        func poly(_ c: [Double]) -> String { "(" + (0..<8).map { FoamNum.s($0 < c.count ? c[$0] : 0) }.joined(separator: " ") + ")" }
+        func list(_ c: [Double]) -> String { "(" + c.map(FoamNum.s).joined(separator: " ") + ")" }
+        let eosCoeffs: String
+        switch eos {
+        case "incompressiblePerfectGas": eosCoeffs = "pRef \(FoamNum.s(pop));"
+        case "Boussinesq": eosCoeffs = "rho0 \(FoamNum.s(mat.density)); T0 \(FoamNum.s(s.general.operatingTemperature)); beta \(FoamNum.s(mat.thermalExpansion));"
+        case "rhoConst": eosCoeffs = "rho \(FoamNum.s(mat.density));"
+        case "perfectFluid": eosCoeffs = "R \(FoamNum.s(th.perfectFluidR)); rho0 \(FoamNum.s(th.perfectFluidRho0));"
+        case "PengRobinsonGas": eosCoeffs = "Tc \(FoamNum.s(th.criticalTemperature)); Vc \(FoamNum.s(th.criticalVolume)); Pc \(FoamNum.s(th.criticalPressure)); omega \(FoamNum.s(th.acentricFactor));"
+        case "icoPolynomial": eosCoeffs = "rhoCoeffs<8> \(poly(th.rhoCoeffs));"
+        default: eosCoeffs = ""
+        }
+        let thermoCoeffs: String
+        switch th.thermo {
+        case .hConst: thermoCoeffs = "Cp \(FoamNum.s(mat.specificHeat)); Hf 0;"
+        case .janaf:
+            guard th.highCpCoeffs.count == 7, th.lowCpCoeffs.count == 7 else { throw SolverError("JANAF thermo needs 7 high- and 7 low-temperature coefficients.") }
+            thermoCoeffs = "Tlow \(FoamNum.s(th.janafTlow)); Thigh \(FoamNum.s(th.janafThigh)); Tcommon \(FoamNum.s(th.janafTcommon)); highCpCoeffs \(list(th.highCpCoeffs)); lowCpCoeffs \(list(th.lowCpCoeffs));"
+        case .hPolynomial: thermoCoeffs = "Hf \(FoamNum.s(th.formationEnthalpy)); Sf \(FoamNum.s(th.formationEntropy)); CpCoeffs<8> \(poly(th.cpCoeffs));"
+        }
+        let transportCoeffs: String
+        switch transport {
+        case "sutherland":
+            let As = mat.viscosity * (mat.sutherlandT0 + mat.sutherlandS) / pow(mat.sutherlandT0, 1.5)
+            transportCoeffs = "As \(FoamNum.s(As)); Ts \(FoamNum.s(mat.sutherlandS));"
+        case "polynomial": transportCoeffs = "muCoeffs<8> \(poly(th.muCoeffs)); kappaCoeffs<8> \(poly(th.kappaCoeffs));"
+        default:
+            let pr = mat.thermalConductivity > 0 ? mat.viscosity * mat.specificHeat / mat.thermalConductivity : 0.71
+            transportCoeffs = "mu \(FoamNum.s(mat.viscosity)); Pr \(FoamNum.s(pr));"
+        }
+        let t = FoamFile.header("dictionary", "thermophysicalProperties", location: "constant") + """
+        thermoType
+        {
+            type            \(psi ? "hePsiThermo" : "heRhoThermo");
+            mixture         pureMixture;
+            transport       \(transport);
+            thermo          \(thermoName);
+            equationOfState \(eos);
+            specie          specie;
+            energy          \(energy);
+        }
+
+        mixture
+        {
+            specie          { molWeight \(FoamNum.s(mat.molecularWeight)); }
+            equationOfState { \(eosCoeffs) }
+            thermodynamics  { \(thermoCoeffs) }
+            transport       { \(transportCoeffs) }
+        }
+
+        """
+        try put("constant/thermophysicalProperties", t)
+    }
+
     // MARK: system/
 
-    var energyField: String? { boussinesq ? "T" : (thermal ? (compressible ? "e" : "h") : nil) }
+    var energyField: String? { boussinesq ? "T" : (thermal ? (internalEnergy ? "e" : "h") : nil) }
+
+    /// The resolved OpenFOAM thermophysical choice: (transport, equation of state).
+    var thermoChoice: (transport: String, eos: String) {
+        let th = o.thermo
+        let transport = th.transport == .automatic ? (mat.viscosityMethod == .sutherland ? "sutherland" : "const") : th.transport.rawValue
+        if th.equationOfState != .automatic { return (transport, th.equationOfState.rawValue) }
+        switch mat.densityMethod {
+        case .idealGas: return (transport, "perfectGas")
+        case .incompressibleIdealGas: return (transport, "incompressiblePerfectGas")
+        case .boussinesq: return (transport, "Boussinesq")
+        case .constant: return (transport, "rhoConst")
+        }
+    }
+
+    /// Energy variable of thermophysical solvers: compressible solvers use internal energy, the
+    /// rest enthalpy, unless OpenFOAM has the chosen thermophysical model only in the other form.
+    var internalEnergy: Bool {
+        guard thermal, !o.thermo.isAutomatic else { return compressible }
+        let (tr, eos) = thermoChoice
+        func has(_ e: String) -> Bool {
+            let k = "\(tr),\(e),\(o.thermo.thermo.rawValue),\(eos)"
+            return FoamThermoSettings.rhoThermoTypes.contains(k) || FoamThermoSettings.psiThermoTypes.contains(k)
+        }
+        if compressible { return has("sensibleInternalEnergy") || !has("sensibleEnthalpy") }
+        return !has("sensibleEnthalpy") && has("sensibleInternalEnergy")
+    }
     var turbulenceFieldNames: [String] { turb.family == .laminar ? [] : turb.fields }
     var scalarNames: [String] { s.models.passiveScalars.map { MeshWriters.foamName($0.name) } }
 
@@ -1369,6 +1728,7 @@ final class Writer {
         } else {
             div += "    div((nuEff*dev2(T(grad(U))))) Gauss linear;\n"
         }
+        if o.postProcessing.functions.contains("age") { div += "    div(phi,age)    bounded Gauss upwind;\n" }
         for n in scalarNames {
             div += "    div(phi,\(n))".padding(toLength: 20, withPad: " ", startingAt: 0) + (sc.divScalars.isEmpty ? conv(s.methods.scalars, field: n) : sc.divScalars) + ";\n"
         }
@@ -1439,13 +1799,15 @@ final class Writer {
         switch l.solver {
         case "GAMG":
             t += "        smoother        \(l.smoother);\n        nCellsInCoarsestLevel \(l.nCellsInCoarsestLevel);\n"
+            t += "        nPreSweeps      \(l.nPreSweeps);\n        nPostSweeps     \(l.nPostSweeps);\n        mergeLevels     \(max(1, l.mergeLevels));\n        cacheAgglomeration \(l.cacheAgglomeration ? "true" : "false");\n"
         case "smoothSolver":
-            t += "        smoother        \(l.smoother);\n        nSweeps         1;\n"
+            t += "        smoother        \(l.smoother);\n        nSweeps         \(max(1, l.nSweeps));\n"
         case "diagonal":
             return "    \(name)\n    {\n        solver          diagonal;\n    }\n"
         default:
             t += "        preconditioner  \(l.preconditioner);\n"
         }
+        if l.minIter > 0 { t += "        minIter         \(l.minIter);\n" }
         t += "        tolerance       \(FoamNum.s(l.tolerance));\n        relTol          \(final ? "0" : FoamNum.s(l.relTol));\n        maxIter         \(l.maxIter);\n    }\n"
         return t
     }
@@ -1462,6 +1824,7 @@ final class Writer {
             if thermal { t += "    \"rho.*\"\n    {\n        solver          diagonal;\n    }\n" }
             if report.runsPotentialFoam { t += solverEntry("Phi", o.pressureSolver) }
             t += solverEntry("U", o.velocitySolver) + solverEntry("UFinal", o.velocitySolver, final: true)
+            if o.adaptiveRefinement.enabled && app.isTransient { t += solverEntry("\"pcorr.*\"", o.pressureSolver, final: true) }
             if !turbulenceFieldNames.isEmpty {
                 let group = "\"(\(turbulenceFieldNames.joined(separator: "|")))\""
                 let groupF = "\"(\(turbulenceFieldNames.joined(separator: "|")))Final\""
@@ -1469,6 +1832,7 @@ final class Writer {
             }
             if let e = energyField { t += solverEntry(e, o.energySolver) + solverEntry("\(e)Final", o.energySolver, final: true) }
             for n in scalarNames { t += solverEntry(n, o.energySolver) + solverEntry("\(n)Final", o.energySolver, final: true) }
+            if o.postProcessing.functions.contains("age") { t += solverEntry("age", o.turbulenceSolver, final: true) }
             if radiating {
                 if o.radiation.model == .P1 { t += solverEntry("G", FoamLinearSolver(solver: "PCG", preconditioner: "DIC", tolerance: 1e-5, relTol: 0.1)) }
                 else { t += "    \"Ii.*\"\n    {\n        solver          GAMG;\n        smoother        symGaussSeidel;\n        tolerance       1e-4;\n        relTol          0;\n        maxIter         5;\n        nPostSweeps     1;\n    }\n" }
@@ -1481,7 +1845,9 @@ final class Writer {
         let supportsConsistent = [.simpleFoam, .pimpleFoam, .rhoSimpleFoam, .rhoPimpleFoam].contains(app)
         let wantsSIMPLEC = s.methods.coupling == .simplec
         let consistent = supportsConsistent && (o.consistent ?? wantsSIMPLEC)
-        let pRef = hasFixedPressure ? "" : "    pRefCell        0;\n    pRefValue       \(FoamNum.s(thermal ? pop : 0));\n"
+        let pRefLevel = (thermal ? pop : 0) + (thermal ? o.pressureReferenceValue : o.pressureReferenceValue / rho)
+        let pRefWhere = o.pressureReferencePoint.flatMap { $0.count == 3 ? "    pRefPoint       \(FoamNum.vec($0));\n" : nil } ?? "    pRefCell        0;\n"
+        let pRef = hasFixedPressure ? "" : pRefWhere + "    pRefValue       \(FoamNum.s(pRefLevel));\n"
         var resid = ""
         if o.residualP > 0 { resid += "        \(pName) \(FoamNum.s(o.residualP));\n" }
         if o.residualU > 0 { resid += "        U \(FoamNum.s(o.residualU));\n" }
@@ -1499,7 +1865,7 @@ final class Writer {
         case .rhoCentralFoam:
             break
         default:
-            t += "PIMPLE\n{\n    momentumPredictor \(o.momentumPredictor ? "yes" : "no");\n    nOuterCorrectors \(o.nOuterCorrectors);\n    nCorrectors     \(o.nCorrectors);\n    nNonOrthogonalCorrectors \(nonOrth);\n    consistent      \(consistent ? "yes" : "no");\n    turbOnFinalIterOnly \(o.turbOnFinalIterOnly ? "yes" : "no");\n" + pRef
+            t += "PIMPLE\n{\n    momentumPredictor \(o.momentumPredictor ? "yes" : "no");\n    nOuterCorrectors \(o.nOuterCorrectors);\n    nCorrectors     \(o.nCorrectors);\n    nNonOrthogonalCorrectors \(nonOrth);\n    consistent      \(consistent ? "yes" : "no");\n    turbOnFinalIterOnly \(o.turbOnFinalIterOnly ? "yes" : "no");\n" + (o.adaptiveRefinement.enabled ? "    correctPhi      yes;\n" : "") + pRef
             if app == .rhoPimpleFoam { t += "    transonic       no;\n    pMinFactor      0.1;\n    pMaxFactor      2;\n" }
             if o.outerResidual > 0 {
                 t += "    outerCorrectorResidualControl\n    {\n        U { tolerance \(FoamNum.s(o.outerResidual)); relTol 0; }\n        \(pName) { tolerance \(FoamNum.s(o.outerResidual)); relTol 0; }\n    }\n"
@@ -1773,21 +2139,30 @@ final class Writer {
 
             """
         }
-        if transient && r.dataSampling {
+        let fa = o.fieldAverage
+        if transient && (fa.enabled ?? r.dataSampling) {
+            let names = fa.fields.split(whereSeparator: { $0 == " " || $0 == "," }).compactMap { Writer.word(String($0)) }
+            let win = fa.window > 0 ? " window \(FoamNum.s(fa.window));" : ""
+            let entries = (names.isEmpty ? ["U", "p"] : names).map { "            \($0) { mean on; prime2Mean \(fa.prime2Mean ? "on" : "off"); base time;\(win) }" }
             functions += """
                 fieldAverage
                 {
                     type            fieldAverage;
                     libs            (fieldFunctionObjects);
                     writeControl    writeTime;
+            \(fa.startTime > 0 ? "        timeStart       \(FoamNum.s(fa.startTime));\n" : "")\
                     fields
                     (
-                        U { mean on; prime2Mean on; base time; }
-                        p { mean on; prime2Mean off; base time; }
+            \(entries.joined(separator: "\n"))
                     );
                 }
 
             """
+        }
+        functions += runtimeExpressionFunctions
+        if o.postProcessing.functions.contains("age") {
+            // age solves a transport equation on the flux, which exists only while the solver runs
+            functions += "    age\n    {\n        type            age;\n        libs            (fieldFunctionObjects);\n        executeControl  writeTime;\n        writeControl    writeTime;\n    }\n\n"
         }
         for (i, sc) in s.models.passiveScalars.enumerated() {
             let name = MeshWriters.foamName(sc.name)
@@ -1821,8 +2196,8 @@ final class Writer {
         endTime         \(FoamNum.time(endTime));
         deltaT          \(FoamNum.s(firstDt));
 
-        writeControl    \(adjustable ? "adjustable" : "timeStep");
-        writeInterval   \(adjustable ? FoamNum.s(Double(every) * dt) : "\(every)");
+        writeControl    \(writeControlName(adjustable: adjustable));
+        writeInterval   \(writeIntervalText(adjustable: adjustable, every: every, dt: dt));
         purgeWrite      \(o.purgeWrite);
         writeFormat     \(o.writeFormat == "ascii" ? "ascii" : "binary");
         writePrecision  \(o.writePrecision);
@@ -1842,6 +2217,34 @@ final class Writer {
         }
         t += "functions\n{\n" + functions + "}\n"
         try put("system/controlDict", t)
+    }
+
+    /// exprField function objects evaluated while solving (expression fields marked "during run",
+    /// and the indicator of adaptive refinement when it is an expression).
+    var runtimeExpressionFunctions: String {
+        var list = o.postProcessing.expressionFields.filter { $0.duringRun && $0.isSafe }
+        if o.adaptiveRefinement.enabled && o.adaptiveRefinement.isExpression && app.isTransient {
+            list.insert(FoamExpressionField(name: "refinementIndicator", expression: o.adaptiveRefinement.field), at: 0)
+        }
+        return list.compactMap { e -> String? in
+            guard let n = Writer.word(e.name) else { return nil }
+            let indicator = n == "refinementIndicator"
+            return "    \(n)\n    {\n        type            exprField;\n        libs            (fieldFunctionObjects);\n        field           \(n);\n        expression      \"\(e.expression)\";\n        action          new;\n        autowrite       \(indicator ? "false" : "true");\n        store           true;\n        executeControl  timeStep;\n        writeControl    \(indicator ? "none" : "writeTime");\n    }\n\n"
+        }.joined()
+    }
+
+    func writeControlName(adjustable: Bool) -> String {
+        switch o.writeControl {
+        case .automatic: return adjustable ? "adjustable" : "timeStep"
+        default: return o.writeControl.rawValue
+        }
+    }
+    func writeIntervalText(adjustable: Bool, every: Int, dt: Double) -> String {
+        switch o.writeControl {
+        case .automatic: return adjustable ? FoamNum.s(Double(every) * dt) : "\(every)"
+        case .timeStep: return "\(every)"
+        default: return FoamNum.s(max(o.writeEvery, 1e-12))
+        }
     }
 
     /// Optional function objects from the OpenFOAM page.
@@ -1920,10 +2323,15 @@ final class Writer {
     func writeDecomposeParDict() throws {
         let n = max(1, o.cores)
         let bb = MeshQuality.report(m).bounds
-        let split = Self.factor(n, size: bb.max - bb.min)
+        var split = Self.factor(n, size: bb.max - bb.min)
+        if let d = o.decompositionSplit, d.count == 3, d.allSatisfy({ $0 > 0 }) {
+            if d[0] * d[1] * d[2] == n { split = (d[0], d[1], d[2]) }
+            else { report.warnings.append("Decomposition \(d[0])×\(d[1])×\(d[2]) ≠ \(n) cores; split chosen automatically.") }
+        }
+        let order = ["xyz", "xzy", "yxz", "yzx", "zxy", "zyx"].contains(o.decompositionOrder) ? o.decompositionOrder : "xyz"
         var t = FoamFile.header("dictionary", "decomposeParDict", location: "system")
         t += "numberOfSubdomains \(n);\n\nmethod          \(o.decomposition);\n\n"
-        t += "coeffs\n{\n    n               (\(split.0) \(split.1) \(split.2));\n    order           xyz;\n    delta           0.001;\n}\n"
+        t += "coeffs\n{\n    n               (\(split.0) \(split.1) \(split.2));\n    order           \(order);\n    delta           0.001;\n}\n"
         try put("system/decomposeParDict", t)
     }
 
@@ -1980,11 +2388,12 @@ final class Writer {
         for c in o.customStages where c.phase == .afterSolve { allrun += customLine(c) }
         let post = o.postProcessing
         if !post.isEmpty && post.afterSolve {
-            if !(post.functions.isEmpty && post.lineSamples.isEmpty && post.isoSurfaces.isEmpty && post.streamlineSeedStart == nil) {
+            if post.runsOpenFOAMFunctions {
                 allrun += "runApplication -s post \(app.rawValue) -postProcess -latestTime -dict system/curlewPostProcess\n"
             }
             if post.exportVTK { allrun += "runApplication foamToVTK -latestTime\n" }
             if post.exportEnsight { allrun += "runApplication foamToEnsight -latestTime\n" }
+            if post.scripts.contains(where: { $0.afterSolve }) { allrun += "# Python post-processing scripts (curlew-post/) are run by Curlew after the solve.\n" }
         }
         allrun += "touch case.foam\n"
         try put("Allrun", allrun)

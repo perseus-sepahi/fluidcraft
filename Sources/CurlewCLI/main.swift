@@ -28,6 +28,8 @@ guard let cmd = args.first else {
       mesh-pipe [--length L] [--diameter D] [--max-size h] [--wall-size h]
                 3D meshes take prism layers: --bl-first h --bl-growth g --bl-layers n [--foam dir]
       export <case.curlew> [--foam dir] [--fluent-mesh out.msh]
+      post-script --case <OpenFOAM case> --script <file.py> [--time t]   Python post-processing (curlew_post)
+      post-script <case.curlew> [--name script] [--trust-case-content]   run the scripts saved in a case
       bench-linear --n 100            CPU vs Metal GPU AMG on an n^3 Poisson problem
       bench-solver --n 64             pressure-based iterations with/without GPU
 
@@ -43,6 +45,15 @@ func exportFoam(_ mesh: Mesh, _ setup: CaseSetup, _ dir: String, iterations: Int
     let r = try FoamCaseWriter.write(mesh: mesh, setup: s, to: URL(fileURLWithPath: dir))
     for w in r.warnings { print("warning: \(w)") }
     print("OpenFOAM application: \(r.application.rawValue), turbulence: \(r.turbulence.rawValue)")
+}
+
+/// A case file can carry custom OpenFOAM content (stages, raw dictionary text, extra files) that
+/// can run programs. As the app asks first, the CLI refuses to run it without --trust-case-content.
+func requireTrustedContent(_ s: CaseSetup) {
+    guard !s.openfoam.activeContent.isEmpty, !args.contains("--trust-case-content") else { return }
+    print("This case adds custom OpenFOAM content to the run:\n")
+    print(s.openfoam.activeContentFullText)
+    fail("\nNot run. Review the content above; if you trust where the case came from, run again with --trust-case-content.")
 }
 
 /// OpenFOAM is the default solver wherever an installation exists (`--backend curlew` for the built-in one).
@@ -62,6 +73,7 @@ func validationWithOpenFOAM(_ mesh: Mesh, _ setup: CaseSetup, iterations: Int) t
     let starter = try PressureBasedSolver(mesh: mesh, setup: s)
     starter.log = { _ in }
     try starter.initialize()
+    requireTrustedContent(s)
     let out = try FoamSolve(mesh: mesh, setup: s).run(initial: starter.state, log: { print($0) }, progress: { _, _, _, _ in })
     if let f = out.failure { fail(f) }
     guard let solver = out.solver else { fail("OpenFOAM results could not be loaded") }
@@ -727,6 +739,7 @@ case "cad-analysis":
             setup.general.backend = .openfoam
             setup.openfoam.caseDirectory = work.appendingPathComponent("run").path
             let starter = try PressureBasedSolver(mesh: mesh, setup: setup); starter.log = { _ in }; try starter.initialize()
+            requireTrustedContent(setup)
             let out = try FoamSolve(mesh: mesh, setup: setup).run(initial: starter.state, log: { print($0) }, progress: { _, _, _, _ in })
             if let f = out.failure { fail(f) }
             if let sol = out.solver {
@@ -810,6 +823,61 @@ case "pinn-env":
         let st = PINNJob.checkEnvironment(python: dir.appendingPathComponent("bin/python").path)
         print((st.ok ? "OK: " : "Not ready: ") + st.text)
     }
+case "post-script":
+    // post-script --case <OpenFOAM case> --script <file.py> [--time t] [--python p]
+    // post-script <case.curlew> [--name script] [--trust-case-content]   scripts saved in a case
+    // post-script --templates                                             list the template scripts
+    if args.contains("--templates") {
+        for t in PostScriptTemplates.all { print("\(t.script.name): \(t.title)") }
+        exit(0)
+    }
+    let py = option("--python", "").isEmpty ? PINNJob.defaultPython : option("--python", "")
+    var setup: CaseSetup? = nil
+    var caseDir = option("--case", "")
+    if !caseDir.isEmpty {
+        caseDir = (caseDir as NSString).expandingTildeInPath
+        guard FileManager.default.fileExists(atPath: caseDir + "/system/controlDict") else { fail("\(caseDir) is not an OpenFOAM case (no system/controlDict)") }
+    }
+    var scripts: [FoamPostScript] = []
+    if args.count > 1, !args[1].hasPrefix("--") {
+        let pkg = try CasePackage.read(URL(fileURLWithPath: args[1]))
+        setup = pkg.setup
+        if caseDir.isEmpty { caseDir = FoamLocations.caseDirectory(for: pkg.setup).path }
+        let name = option("--name", "")
+        scripts = pkg.setup.openfoam.postProcessing.scripts.filter { name.isEmpty || $0.name == name }
+        if scripts.isEmpty { fail(name.isEmpty ? "the case has no Python post-processing scripts" : "no script named \(name) in the case") }
+        // scripts stored in a case file are code from that file: same rule as running the case
+        if !args.contains("--trust-case-content") {
+            print("This case contains Python post-processing scripts:\n")
+            for sc in scripts { print("=== \(sc.name)\n\(sc.code)\n") }
+            fail("Not run. Review the scripts above; if you trust where the case came from, run again with --trust-case-content.")
+        }
+    }
+    let template = option("--template", "")
+    if !template.isEmpty {
+        guard let t = PostScriptTemplates.all.first(where: { $0.script.name == template }) else {
+            fail("no template \(template); templates: " + PostScriptTemplates.all.map(\.script.name).joined(separator: ", "))
+        }
+        scripts = [t.script]
+    }
+    let file = option("--script", "")
+    if !file.isEmpty {
+        let url = URL(fileURLWithPath: (file as NSString).expandingTildeInPath)
+        guard let code = try? String(contentsOf: url, encoding: .utf8) else { fail("cannot read the script \(url.path): no such file (or not UTF-8 text)") }
+        scripts = [FoamPostScript(name: url.deletingPathExtension().lastPathComponent, code: code)]
+    }
+    guard !caseDir.isEmpty, !scripts.isEmpty else {
+        fail("post-script --case <OpenFOAM case dir> (--script <file.py> | --template <name>) [--time t] [--python p]\n       post-script <case.curlew> [--name script] [--trust-case-content]\n       post-script --templates")
+    }
+    var failed = false
+    for sc in scripts {
+        let r = try PostScriptRun().run(sc, caseDirectory: URL(fileURLWithPath: caseDir), time: option("--time", "").isEmpty ? nil : option("--time", ""),
+                                        setup: setup, python: py, log: { print($0) })
+        print(String(format: "%@: %@ in %.1f s (time %@)", sc.name, r.succeeded ? "finished" : "failed (exit \(r.exitCode))", r.seconds, r.time))
+        for f in r.figures { print("  figure: \(f.path)") }
+        failed = failed || !r.succeeded
+    }
+    if failed { exit(2) }
 case "samples":
     // samples [--export dir]: build every CAD sample as STEP
     let dir = option("--export", "").isEmpty ? CADSample.directory : URL(fileURLWithPath: option("--export", ""))
@@ -951,6 +1019,7 @@ func foamCommand() throws {
             for w in r.warnings { print("warning: \(w)") }
             print("Wrote \(r.application.rawValue) case to \(d.path)"); return
         }
+        requireTrustedContent(setup)
         let job = FoamSolve(mesh: mesh, setup: setup)
         signal(SIGINT, SIG_IGN)
         let src = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())

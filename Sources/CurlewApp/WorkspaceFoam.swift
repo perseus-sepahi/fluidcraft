@@ -50,8 +50,18 @@ extension Workspace {
         let a = NSAlert()
         a.alertStyle = .warning
         a.messageText = "Run custom OpenFOAM content from this case file?"
-        a.informativeText = "The case you opened adds the following to the OpenFOAM run. OpenFOAM stages, function objects (systemCall), #codeStream and coded boundary conditions can run programs on this Mac. Only continue if you trust where the case came from.\n\n"
-            + pending.prefix(12).map { "• " + $0 }.joined(separator: "\n") + (pending.count > 12 ? "\n… and \(pending.count - 12) more" : "")
+        a.informativeText = "The case you opened adds the content below to the OpenFOAM run. OpenFOAM stages, function objects (systemCall), #codeStream, #calc, coded conditions and loaded libraries can run programs on this Mac; items marked ⚠️ contain such constructs. Only continue if you trust where the case came from."
+        // the complete text of every item, not a preview
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 560, height: 260))
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        let tv = NSTextView(frame: scroll.bounds)
+        tv.isEditable = false
+        tv.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+        tv.string = setup.openfoam.activeContentFullText
+        tv.autoresizingMask = [.width]
+        scroll.documentView = tv
+        a.accessoryView = scroll
         a.addButton(withTitle: "Cancel")
         a.addButton(withTitle: "Run It")
         guard a.runModal() == .alertSecondButtonReturn else { log("OpenFOAM run cancelled: custom case content not approved (OpenFOAM page › Extra Files and Stages).", .warning); return false }
@@ -138,6 +148,7 @@ extension Workspace {
         }
         foamStatus = out.loadedTime.map { "Results loaded from time \($0) in \(out.caseDirectory.path)" } ?? "No results loaded"
         if !setup.openfoam.postProcessing.lineSamples.isEmpty, let samples = try? FoamPostResults.lineSamples(in: out.caseDirectory) { showLineSamples(samples) }
+        for r in out.scripts { postScriptResults[(r.outputDirectory.lastPathComponent)] = r }
         isDirty = true
     }
 
