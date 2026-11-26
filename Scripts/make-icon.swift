@@ -1,4 +1,4 @@
-// Draws the Curlew app icon (1024x1024): streamlines curling around a cylinder
+// Draws the FluidCraft app icon (1024x1024): streamlines curling around a cylinder
 // into a vortex wake, coloured with the solver's rainbow field map.
 // Usage: swift Scripts/make-icon.swift Assets/AppIcon-1024.png
 import Foundation

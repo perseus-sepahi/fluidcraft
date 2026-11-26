@@ -10,36 +10,36 @@ let numeric: [SwiftSetting] = [
 let plain: [SwiftSetting] = [.swiftLanguageMode(.v5)]
 
 let package = Package(
-    name: "Curlew",
+    name: "FluidCraft",
     platforms: [.macOS(.v15)],
     products: [
-        .executable(name: "Curlew", targets: ["CurlewApp"]),
-        .executable(name: "curlew-cli", targets: ["CurlewCLI"]),
-        .library(name: "CurlewSolver", targets: ["CurlewSolver"]),
+        .executable(name: "FluidCraft", targets: ["FluidCraftApp"]),
+        .executable(name: "fluidcraft-cli", targets: ["FluidCraftCLI"]),
+        .library(name: "FluidCraftSolver", targets: ["FluidCraftSolver"]),
     ],
     targets: [
         // Unstructured polyhedral mesh, geometry, quality, importers and mesh generation.
-        .target(name: "CurlewMesh", swiftSettings: numeric),
+        .target(name: "FluidCraftMesh", swiftSettings: numeric),
         // Case model, pressure- and density-based finite-volume solvers, physics models.
-        .target(name: "CurlewSolver", dependencies: ["CurlewMesh"], swiftSettings: numeric),
+        .target(name: "FluidCraftSolver", dependencies: ["FluidCraftMesh"], swiftSettings: numeric),
         // Surfaces, contours, vectors, pathlines, plots, reports and data export.
-        .target(name: "CurlewPost", dependencies: ["CurlewMesh", "CurlewSolver"], swiftSettings: numeric),
+        .target(name: "FluidCraftPost", dependencies: ["FluidCraftMesh", "FluidCraftSolver"], swiftSettings: numeric),
         // OpenFOAM backend: installation discovery, case writer, staged runner, log parsing,
         // result reading and snappyHexMesh CAD meshing.
-        .target(name: "CurlewFoam", dependencies: ["CurlewMesh", "CurlewSolver"], swiftSettings: plain),
+        .target(name: "FluidCraftFoam", dependencies: ["FluidCraftMesh", "FluidCraftSolver"], swiftSettings: plain),
         .executableTarget(
-            name: "CurlewApp",
-            dependencies: ["CurlewMesh", "CurlewSolver", "CurlewPost", "CurlewFoam"],
+            name: "FluidCraftApp",
+            dependencies: ["FluidCraftMesh", "FluidCraftSolver", "FluidCraftPost", "FluidCraftFoam"],
             swiftSettings: plain
         ),
         .executableTarget(
-            name: "CurlewCLI",
-            dependencies: ["CurlewMesh", "CurlewSolver", "CurlewPost", "CurlewFoam"],
+            name: "FluidCraftCLI",
+            dependencies: ["FluidCraftMesh", "FluidCraftSolver", "FluidCraftPost", "FluidCraftFoam"],
             swiftSettings: plain
         ),
         .testTarget(
-            name: "CurlewTests",
-            dependencies: ["CurlewMesh", "CurlewSolver", "CurlewPost", "CurlewFoam"],
+            name: "FluidCraftTests",
+            dependencies: ["FluidCraftMesh", "FluidCraftSolver", "FluidCraftPost", "FluidCraftFoam"],
             resources: [.copy("Fixtures")],
             swiftSettings: plain
         ),

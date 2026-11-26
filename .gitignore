@@ -4,3 +4,7 @@ dist/
 .swiftpm/
 Validation/runs/
 .DS_Store
+
+# distribution files (built by Scripts/build-app.sh release)
+macOS/Direct/*.dmg
+macOS/Direct/*.zip

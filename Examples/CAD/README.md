@@ -15,7 +15,7 @@ header pipe, 300 mm long along +x, feeding three 15 mm branches that leave along
    - Inlet velocity **0.5 m/s**
    - Fluid **water-liquid**
    - Resolution **Coarse**
-3. **Build Case**. Curlew meshes the model with Gmsh (tetrahedra and 12 prism layers) and
+3. **Build Case**. FluidCraft meshes the model with Gmsh (tetrahedra and 12 prism layers) and
    finds the five openings: `inlet`, `outlet` (the far end of the header) and the branches
    `outlet_ymin`, `outlet_ymin2`, `outlet_ymin3`.
 4. Close the header's far end so that it works as a manifold: on Boundary Conditions, change
@@ -29,25 +29,28 @@ header pipe, 300 mm long along +x, feeding three 15 mm branches that leave along
 ## From the command line
 
 ```bash
-curlew-cli cad-analysis Examples/CAD/manifold.step --type internal --axis 0 --speed 0.5 \
+fluidcraft-cli cad-analysis Examples/CAD/manifold.step --type internal --axis 0 --speed 0.5 \
   --fluid water-liquid --unit mm --level coarse --wall outlet \
-  --post-line 0,0,0:0.3,0,0 --vtk --run --backend openfoam --cores 4
+  --post-line 0,0,0:0.3,0,0 --vtk --run --cores 4
 ```
 
-## Result (OpenFOAM v2606, 60 886 cells, 30 s on 4 cores)
+## Result (OpenFOAM v2606, 44 698 cells, 22 s on 4 cores)
+
+Gmsh's tetrahedra reach OpenFOAM through `gmshToFoam`; snappyHexMesh adds the 12 prism layers
+(48 % of the requested thickness at this coarse resolution).
 
 | Opening | Mass flow | Share |
 |---|---|---|
 | inlet | 0.3464 kg/s in | |
-| branch 1 (x = 75 mm) | 0.1091 kg/s | 31.5 % |
-| branch 2 (x = 150 mm) | 0.1160 kg/s | 33.5 % |
-| branch 3 (x = 225 mm) | 0.1213 kg/s | 35.0 % |
+| branch 1 (x = 75 mm) | 0.1112 kg/s | 32.1 % |
+| branch 2 (x = 150 mm) | 0.1146 kg/s | 33.1 % |
+| branch 3 (x = 225 mm) | 0.1207 kg/s | 34.8 % |
 
-The outflow balances the inflow. The flow split is the classic one for a dividing manifold:
-the header slows down past each branch, so its static pressure recovers toward the closed end
-(the line sample shows 564 → 628 Pa), and the last branch gets the most flow. The inlet
-pressure is 568 Pa.
+The outflow balances the inflow to 2·10⁻⁵. The flow split is the classic one for a dividing
+manifold: the header slows down past each branch, so its static pressure recovers toward the
+closed end (the line sample shows 500 → 562 Pa), and the last branch gets the most flow. The
+inlet pressure is 504 Pa.
 
 The same model is also built in as the **Coolant manifold** sample (File › CAD Samples),
-drawn in metres. `manifold-result.curlew` holds the solved case: open it with File › Open
+drawn in metres. `manifold-result.fluidcraft` holds the solved case: open it with File › Open
 Case to see the contours, reports and XY plot straight away.

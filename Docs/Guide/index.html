@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FluidCraft Guide</title>
+<style>
+  :root { --bg: #fbfaf8; --card: #ffffff; --ink: #1d1d1f; --muted: #66666b; --line: #e5e3df; --accent: #e9761c; --code: #f2f0ec; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #1c1c1e; --card: #252527; --ink: #f2f2f4; --muted: #a1a1a6; --line: #3a3a3d; --accent: #ff9a3c; --code: #2f2f32; } }
+  :root[data-theme="dark"] { --bg: #1c1c1e; --card: #252527; --ink: #f2f2f4; --muted: #a1a1a6; --line: #3a3a3d; --accent: #ff9a3c; --code: #2f2f32; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; }
+  .wrap { display: grid; grid-template-columns: 220px 1fr; max-width: 1100px; margin: 0 auto; }
+  nav { position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto; padding: 28px 12px 28px 20px; border-right: 1px solid var(--line); }
+  nav b { display: block; font-size: 13px; margin: 0 0 10px 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  nav a { display: block; padding: 5px 8px; border-radius: 6px; color: var(--ink); text-decoration: none; font-size: 14px; }
+  nav a:hover { background: var(--code); }
+  main { padding: 28px 40px 80px; min-width: 0; }
+  h1 { font-size: 30px; margin: 0 0 6px; }
+  h2 { font-size: 21px; margin: 44px 0 10px; padding-top: 8px; border-top: 1px solid var(--line); }
+  h3 { font-size: 16px; margin: 22px 0 6px; }
+  p.lead { color: var(--muted); font-size: 16px; margin-top: 0; }
+  a { color: var(--accent); }
+  code, kbd { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code); padding: 1px 5px; border-radius: 4px; }
+  pre { background: var(--code); padding: 12px 14px; border-radius: 8px; overflow-x: auto; }
+  pre code { padding: 0; background: none; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 14px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .note { background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 8px; padding: 10px 14px; margin: 14px 0; }
+  ol li, ul li { margin: 4px 0; }
+  @media (max-width: 760px) { .wrap { grid-template-columns: 1fr; } nav { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: 16px; } main { padding: 20px 16px 60px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+  <b>FluidCraft Guide</b>
+  <a href="#start">Getting started</a>
+  <a href="#window">The window</a>
+  <a href="#workflow">A case, step by step</a>
+  <a href="#modules">Modules</a>
+  <a href="#meshing">Meshing</a>
+  <a href="#running">Running OpenFOAM</a>
+  <a href="#results">Results</a>
+  <a href="#python">Python scripts</a>
+  <a href="#ai">AI assistant and PINNs</a>
+  <a href="#files">Files and folders</a>
+  <a href="#console">Console and command line</a>
+  <a href="#trouble">Troubleshooting</a>
+  <a href="#about">About</a>
+</nav>
+<main>
+<h1>FluidCraft Guide</h1>
+<p class="lead">FluidCraft is a computational fluid dynamics (CFD) app for macOS. You set up the case, mesh it and look at the results in FluidCraft; <strong>OpenFOAM solves it</strong>. Meshes come from OpenFOAM's blockMesh and snappyHexMesh and from Gmsh.</p>
+
+<h2 id="start">Getting started</h2>
+<h3>What you need</h3>
+<table>
+  <tr><th>Program</th><th>Needed for</th></tr>
+  <tr><td><strong>OpenFOAM</strong> (ESI release, v2406 or newer)</td><td>Required: every calculation, block meshes, prism layers, mesh conversion.</td></tr>
+  <tr><td><strong>Gmsh</strong></td><td>Required for the Gmsh templates, CAD import and CAD analysis.</td></tr>
+  <tr><td>ParaView</td><td>Optional: opening an OpenFOAM case in ParaView.</td></tr>
+  <tr><td>Python 3 with NumPy</td><td>Optional: Python post-processing scripts. PyTorch for neural networks is installed from Settings › Machine Learning.</td></tr>
+</table>
+<p>Open <strong>FluidCraft › Settings › Tools</strong>. It shows which of these are installed, with their versions, and installs a missing one with Homebrew when you click <em>Install…</em>. The status in the top-right corner of the window (a green or orange dot next to “OpenFOAM”) opens the same page.</p>
+<div class="note">FluidCraft needs macOS 15 or later. The OpenFOAM app for macOS runs on Apple silicon (M1 or later).</div>
+
+<h3>Your first case in two minutes</h3>
+<ol>
+  <li>On the <strong>Start</strong> page, click <em>Lid-driven cavity</em> under <em>Learn with a Tutorial</em>.</li>
+  <li>Press <kbd>⌘R</kbd> (Solve › Calculate). OpenFOAM runs; the residuals appear under <em>Scaled Residuals</em>.</li>
+  <li>When it finishes, choose <strong>Contours</strong> in the sidebar (or the <em>Contours</em> button in the toolbar) to see the velocity field.</li>
+</ol>
+
+<h2 id="window">The window</h2>
+<table>
+  <tr><th>Area</th><th>What it does</th></tr>
+  <tr><td>Module ribbon (top)</td><td>Picks a workflow: Wind Energy, Electronics Cooling, General CFD &amp; CAD, Pre &amp; Post-Processing, AI &amp; Machine Learning. On the right it shows the module and case you are working on, and the OpenFOAM status.</td></tr>
+  <tr><td>Sidebar (left)</td><td>The steps of a case: Case, Meshing, Setup, Solution, Results. A <span style="color:#34c759">✓</span> marks a finished step; an <span style="color:#ff9500">!</span> marks one that needs attention (hover to see why). Pages with nothing to show yet are dimmed.</td></tr>
+  <tr><td>Task panel (middle)</td><td>The settings of the selected step.</td></tr>
+  <tr><td>Graphics (right)</td><td>The mesh and results, plus tabs for Scaled Residuals, Report Plots and XY Plot. Drag to rotate, scroll to zoom.</td></tr>
+  <tr><td>Console (bottom right)</td><td>What FluidCraft and OpenFOAM are doing, and a command line (type <code>help</code>).</td></tr>
+  <tr><td>Toolbar</td><td>Mesh, Check, Initialize, Calculate (<kbd>⌘R</kbd>) / Stop (<kbd>⌘.</kbd>), and the display mode: Mesh, Contours, Vectors, Pathlines.</td></tr>
+</table>
+
+<h2 id="workflow">A case, step by step</h2>
+<ol>
+  <li><strong>Mesh.</strong> Generate one (Mesh Generation), import one (File › Import Mesh…), or let a module or tutorial build it. <em>Mesh &amp; Quality</em> reports cell counts and quality.</li>
+  <li><strong>Setup.</strong> <em>General</em> (steady or transient, gravity), <em>Models</em> (turbulence, energy, scalars), <em>Materials</em>, <em>Cell Zone Conditions</em> (fluid, solid, porous, rotating zones), <em>Boundary Conditions</em> (inlets, outlets, walls, symmetry, periodic), <em>Named Expressions</em> (formulas of x, y, z and t), <em>Reference Values</em> (for force coefficients).</li>
+  <li><strong>Solution.</strong> <em>Methods</em> and <em>Controls</em> (schemes and relaxation), <em>Report Definitions</em> and <em>Monitors</em> (forces, flows, averages), <em>Initialization</em>, <em>OpenFOAM</em> (application, turbulence model, cores and every advanced setting), then <em>Run Calculation</em>.</li>
+  <li><strong>Results.</strong> Surfaces, mesh display, contours, vectors, pathlines, XY plots and reports.</li>
+</ol>
+<p>Everything a module or tutorial sets up stays editable on these pages.</p>
+
+<h2 id="modules">Modules</h2>
+<table>
+  <tr><th>Module</th><th>What it does</th></tr>
+  <tr><td>Wind Farm</td><td>Rows of turbines as actuator disks in an atmospheric boundary layer: wind speed at each turbine and wake losses.</td></tr>
+  <tr><td>Wind-Turbine Rotor</td><td>A resolved rotor in a rotating zone (MRF): torque, power coefficient and thrust.</td></tr>
+  <tr><td>Air-Cooled Heat Sink</td><td>A chip on a board under a finned heat sink in a duct: conjugate heat transfer, chip temperature, pressure drop.</td></tr>
+  <tr><td>Liquid Cold Plate</td><td>A chip under a plate with water channels: heat into the coolant, chip temperature, pressure drop.</td></tr>
+  <tr><td>CAD Import &amp; Analysis</td><td>Your STEP, IGES, STL… file or a sample: external aerodynamics, internal flow or a conjugate heat sink, meshed and set up automatically.</td></tr>
+  <tr><td>Tutorials &amp; Validation</td><td>Textbook cases and the validation suite, which checks FluidCraft and OpenFOAM against published results.</td></tr>
+  <tr><td>Custom Case</td><td>Your own mesh and setup.</td></tr>
+  <tr><td>Pre-Processing</td><td>OpenFOAM's mapFields, setFields, applyBoundaryLayer and a full checkMesh.</td></tr>
+  <tr><td>Post-Processing</td><td>Derived fields (vorticity, Q, y⁺, wall shear…), line samples, iso-surfaces, streamlines, VTK and EnSight export.</td></tr>
+  <tr><td>Physics-Informed Neural Network</td><td>Trains a neural network on the case with PyTorch and loads its prediction as a solution.</td></tr>
+  <tr><td>AI Assistant</td><td>Ask questions about the open case.</td></tr>
+</table>
+<p>Modules with a <em>Build Case</em> button make the mesh and the whole setup; <em>Build and Run</em> also runs OpenFOAM.</p>
+
+<h2 id="meshing">Meshing</h2>
+<ul>
+  <li><strong>Block meshes</strong> (channels, boxes, obstacles, graded spacing) and a cylinder O-grid are made by OpenFOAM's <code>blockMesh</code>.</li>
+  <li><strong>Gmsh templates</strong>: a cylinder in a channel, a NACA airfoil, a pipe, and CAD models (external or internal flow).</li>
+  <li><strong>snappyHexMesh</strong> meshes CAD models with refinement and prism layers (Mesh Generation › snappyHexMesh, or the CAD Analysis mesher choice).</li>
+  <li><strong>Prism layers</strong> on 3D Gmsh meshes come from snappyHexMesh's layer addition; set the first-layer height or let the y⁺ calculator size it.</li>
+  <li><strong>Importing</strong>: ASCII Fluent <code>.msh</code>/<code>.cas</code> files are converted by OpenFOAM's <code>fluentMeshToFoam</code>, 3D Gmsh files by <code>gmshToFoam</code>, and OpenFOAM case folders are read directly. The console says which converter read the file. Binary files and 2D Gmsh meshes are read by FluidCraft itself. Fluent HDF5 files (<code>.cas.h5</code>) are not supported: export an ASCII mesh from Fluent.</li>
+  <li><strong>Native CAD formats</strong> (SolidWorks, CATIA, Parasolid…) need a converter command, set in Settings › General. Otherwise export STEP from your CAD program.</li>
+</ul>
+
+<h2 id="running">Running OpenFOAM</h2>
+<p><em>Run Calculation</em> (or <kbd>⌘R</kbd>) writes the case into <code>~/FluidCraft/&lt;case title&gt;</code> and runs it. FluidCraft picks the OpenFOAM application from your setup (simpleFoam, pimpleFoam, buoyant and compressible solvers, chtMultiRegionFoam for conjugate heat transfer, rhoCentralFoam for supersonic flow); the <em>OpenFOAM</em> page lets you override it and set the number of cores.</p>
+<p>The case folder is a normal OpenFOAM case with an <code>Allrun</code> script, so you can also run it in a terminal or on another computer. Solve › Load OpenFOAM Results reads results back.</p>
+<div class="note"><strong>Custom OpenFOAM content.</strong> A case can carry extra stages, function objects or dictionary text. OpenFOAM features such as <code>#codeStream</code> can run programs, so when you open a case from someone else that contains such content, FluidCraft lists it and asks you to approve it before anything runs.</div>
+
+<h2 id="results">Results</h2>
+<ul>
+  <li><strong>Contours, Vectors, Pathlines</strong> on the boundaries or on your own planes and iso-surfaces (Results › Surfaces).</li>
+  <li><strong>XY Plot</strong>: a field along a line.</li>
+  <li><strong>Reports</strong>: forces and coefficients, mass flow, surface and volume averages; also plotted during the run (Report Plots).</li>
+  <li><strong>ParaView</strong>: Solve › Open OpenFOAM Case in ParaView, or File › Export › Solution to ParaView.</li>
+  <li><strong>Pictures</strong>: the camera button above the graphics saves a PNG with the legend.</li>
+</ul>
+
+<h2 id="python">Python scripts</h2>
+<p>Post-Processing › Python scripts runs your own scripts on the solution with the <code>fluidcraft_post</code> module:</p>
+<pre><code>import numpy as np
+import fluidcraft_post as cp
+
+case = cp.load()
+speed = np.linalg.norm(case["U"], axis=1)
+cp.report("max speed", speed.max(), "m/s")</code></pre>
+<p>Reports appear in FluidCraft; figures and new fields are saved with the case. Scripts use the Python set in Settings › Machine Learning and never run through a shell. Scripts in a case you open from someone else ask for approval first. Older scripts that <code>import curlew_post</code> still work.</p>
+
+<h2 id="ai">AI assistant and PINNs</h2>
+<p>The <strong>AI Assistant</strong> answers questions about your case. Choose the provider in Settings › AI: Anthropic Claude, an OpenAI-compatible service, or a local model through Ollama (which never leaves your Mac). API keys are kept in the macOS Keychain.</p>
+<div class="note"><strong>Privacy.</strong> Nothing is sent anywhere until you ask a question. Your question, and a summary of the open case when <em>Send case summary</em> is on, then go to the provider you chose, under that provider's terms. FluidCraft has no server of its own and collects nothing.</div>
+<p>The <strong>Physics-Informed Neural Network</strong> module trains a network on the case's equations (and, in hybrid mode, on samples of the OpenFOAM solution). It needs PyTorch: Settings › Machine Learning › Install PyTorch… sets it up.</p>
+
+<h2 id="files">Files and folders</h2>
+<table>
+  <tr><th>What</th><th>Where</th></tr>
+  <tr><td>Cases</td><td><code>.fluidcraft</code> packages (setup, mesh and results). File › Save Case &amp; Data. Older <code>.curlew</code> cases open too.</td></tr>
+  <tr><td>OpenFOAM runs</td><td><code>~/FluidCraft/&lt;case title&gt;</code> (change it on the OpenFOAM page; OpenFOAM needs a path without spaces).</td></tr>
+  <tr><td>Exports</td><td>File › Export: ParaView <code>.vtu</code>, CSV cell data, Fluent <code>.msh</code>, OpenFOAM case.</td></tr>
+  <tr><td>Preferences</td><td>FluidCraft › Settings. Tool paths and AI settings are preferences of the app, never stored in case files.</td></tr>
+</table>
+
+<h2 id="console">Console and command line</h2>
+<p>The console under the graphics accepts commands; type <code>help</code> for the list. For example:</p>
+<pre><code>/tutorial cavity
+/solve/iterate 500
+/display/contour pressure
+/report/forces</code></pre>
+<p>The app bundle contains a command-line tool for batch runs and validation:</p>
+<pre><code>/Applications/FluidCraft.app/Contents/Helpers/fluidcraft tutorial cavity
+/Applications/FluidCraft.app/Contents/Helpers/fluidcraft validate all --cores 4</code></pre>
+
+<h2 id="trouble">Troubleshooting</h2>
+<h3>“OpenFOAM is not installed”</h3>
+<p>Install it from Settings › Tools, or by hand with <code>brew install gerlero/openfoam/openfoam</code>. If you installed it somewhere unusual, choose it on the OpenFOAM page › Installation.</p>
+<h3>A run stops with an error</h3>
+<p>The console shows the last lines of the failing OpenFOAM step. The full logs (<code>log.simpleFoam</code> and so on) are in the case folder: OpenFOAM page › Reveal in Finder. Common causes: a poor mesh (check Mesh &amp; Quality), a time step that is too large in a transient run, or boundary conditions that do not fit together (for example no outlet).</p>
+<h3>The mesh check shows problems</h3>
+<p>Cells with non-positive volume must be fixed before running. Low orthogonal quality slows convergence: refine the mesh, or raise nNonOrthogonalCorrectors on the OpenFOAM page.</p>
+<h3>macOS says the app cannot be opened</h3>
+<p>Builds from the FluidCraft website are signed and notarized. A build you made yourself is only signed for your Mac: right-click it and choose Open the first time.</p>
+<h3>Reporting a problem</h3>
+<p>Help › Report an Issue opens the issue tracker. Please include the console output and, if you can, the case.</p>
+
+<h2 id="about">About</h2>
+<p>FluidCraft is free and open-source software by Perseus Sepahi. It was called Curlew until November 2026.</p>
+<p>OpenFOAM, Gmsh, ParaView and PyTorch are separate programs with their own licences; FluidCraft runs them but does not include them. OPENFOAM® is a registered trade mark of OpenCFD Limited, producer and distributor of the OpenFOAM software via www.openfoam.com. FluidCraft is not approved or endorsed by OpenCFD Limited.</p>
+<p><a href="https://perseus-sepahi.github.io/software/fluidcraft/">Website</a> · <a href="https://github.com/perseus-sepahi/fluidcraft">Source code</a> · <a href="https://github.com/perseus-sepahi/fluidcraft/issues">Issues</a></p>
+</main>
+</div>
+</body>
+</html>

@@ -1,0 +1,267 @@
+import Foundation
+import AppKit
+import FluidCraftMesh
+import FluidCraftSolver
+import FluidCraftPost
+import FluidCraftFoam
+
+/// OpenFOAM: running cases in an installed OpenFOAM, loading the results back, and
+/// meshing CAD with snappyHexMesh.
+extension Workspace {
+
+    // MARK: Installations
+
+    func refreshFoamInstallations() {
+        DispatchQueue.global(qos: .utility).async {
+            let found = FoamDiscovery.discover()
+            DispatchQueue.main.async {
+                self.foamInstallations = found
+                if let first = found.first {
+                    self.log("OpenFOAM found: \(first.name) (\(first.version ?? "?"))\(found.count > 1 ? " and \(found.count - 1) more" : "")")
+                }
+            }
+        }
+    }
+
+    /// Mount/activate the selected installation and run a trivial command through it.
+    func probeFoam() {
+        let s = setup
+        foamProbe = "Checking…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let text: String
+            do {
+                let inst = try FoamLocations.installation(for: s)
+                let p = try inst.resolve().probe()
+                text = (p.ok ? "✓ " : "✗ ") + p.message
+            } catch { text = "✗ \(error)" }
+            DispatchQueue.main.async { self.foamProbe = text }
+        }
+    }
+
+    var foamCaseDirectory: URL { FoamLocations.caseDirectory(for: setup) }
+
+    /// Ask before writing or running custom OpenFOAM content that came from a case file.
+    /// Content the user typed in this session is never in the list.
+    func approveFoamContent() -> Bool {
+        // only items still present (the user may have removed some)
+        let current = Set(setup.openfoam.activeContent)
+        let pending = foamUnapprovedContent.filter { current.contains($0) }
+        guard !pending.isEmpty else { foamUnapprovedContent = []; return true }
+        let a = NSAlert()
+        a.alertStyle = .warning
+        a.messageText = "Run custom OpenFOAM content from this case file?"
+        a.informativeText = "The case you opened adds the content below to the OpenFOAM run. OpenFOAM stages, function objects (systemCall), #codeStream, #calc, coded conditions and loaded libraries can run programs on this Mac; items marked ⚠️ contain such constructs. Only continue if you trust where the case came from."
+        // the complete text of every item, not a preview
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 560, height: 260))
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        let tv = NSTextView(frame: scroll.bounds)
+        tv.isEditable = false
+        tv.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+        tv.string = setup.openfoam.activeContentFullText
+        tv.autoresizingMask = [.width]
+        scroll.documentView = tv
+        a.accessoryView = scroll
+        a.addButton(withTitle: "Cancel")
+        a.addButton(withTitle: "Run It")
+        guard a.runModal() == .alertSecondButtonReturn else { log("OpenFOAM run cancelled: custom case content not approved (OpenFOAM page › Extra Files and Stages).", .warning); return false }
+        foamUnapprovedContent = []
+        return true
+    }
+
+    // MARK: Calculate
+
+    /// Write the case, run it in OpenFOAM and load the latest time into FluidCraft.
+    func calculateWithOpenFOAM() {
+        guard !isRunning else { return }
+        guard let mesh else { log("No mesh loaded.", .error); return }
+        do { try FoamLocations.validate(foamCaseDirectory) } catch { log("\(error)", .error); return }
+        guard approveFoamContent() else { return }
+        isRunning = true
+        foamCancel = false
+        statusText = "OpenFOAM: preparing…"
+        var s = setup
+        s.adopt(mesh: mesh)
+        // continue from loaded results when the setup says so; otherwise the case's own initialization
+        let current = (hasResults && initialized) ? solver : nil
+        let startResiduals = residuals, startReports = reportHistory
+        let interval = setup.run.reportingInterval
+        log("Calculating with OpenFOAM (\(FoamCaseWriter.resolvedApplication(s).rawValue))…", .command)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            var initial: FlowState? = nil
+            if s.openfoam.initialFields == .fluidcraft && !s.openfoam.continueFromLatestTime {
+                if let cur = current {
+                    initial = cur.state
+                    DispatchQueue.main.async { self.log("Initial fields: the current solution (iteration \(cur.iteration)).") }
+                } else {
+                    do {
+                        initial = try FoamSolve.initialFields(mesh: mesh, setup: s)
+                        let how = initial != nil ? "FluidCraft's standard initialization" : (FoamCaseWriter.runsPotentialFoam(s, app: FoamCaseWriter.resolvedApplication(s), mesh: mesh, initial: nil) ? "uniform values, then potentialFoam" : "uniform values")
+                        DispatchQueue.main.async { self.log("Initial fields: \(how).") }
+                    } catch {
+                        DispatchQueue.main.async { self.log("Initialization failed (\(error)); OpenFOAM starts from uniform fields.", .warning) }
+                    }
+                }
+            }
+            let job = FoamSolve(mesh: mesh, setup: s)
+            DispatchQueue.main.async { self.foamJob = job; if self.foamCancel { job.cancel() } }
+            let transient = FoamCaseWriter.resolvedApplication(s).isTransient
+            do {
+                let out = try job.run(initial: initial, residuals: startResiduals, reports: startReports, reportingInterval: interval,
+                                      log: { line in DispatchQueue.main.async { self.log(line) } },
+                                      progress: { res, rep, it, time in
+                                          DispatchQueue.main.async {
+                                              self.residuals = res; self.reportHistory = rep
+                                              self.currentIteration = it; self.flowTime = time
+                                              self.statusText = transient ? String(format: "OpenFOAM t = %.5g s", time) : "OpenFOAM iteration \(it)"
+                                          }
+                                      })
+                DispatchQueue.main.async { self.finishFoam(out) }
+            } catch {
+                DispatchQueue.main.async {
+                    self.foamJob = nil
+                    self.isRunning = false
+                    self.statusText = "Ready"
+                    self.log("\(error)", .error)
+                }
+            }
+        }
+    }
+
+    private func finishFoam(_ out: FoamSolve.Outcome) {
+        foamJob = nil
+        isRunning = false
+        statusText = "Ready"
+        foamLastCase = out.caseDirectory
+        residuals = out.residuals
+        reportHistory = out.reports
+        if let f = out.failure { log(f, f.contains("cancelled") ? .warning : .error) }
+        else { log(String(format: "OpenFOAM finished in %.1f s (%@).", out.seconds, out.report.application.rawValue)) }
+        if let s = out.solution {
+            adoptExternalSolver(s)
+            for rep in setup.reports {
+                log(String(format: "  %@ = %.8g", rep.name, Reports.evaluate(rep, solver: s)))
+            }
+        }
+        foamStatus = out.loadedTime.map { "Results loaded from time \($0) in \(out.caseDirectory.path)" } ?? "No results loaded"
+        if !setup.openfoam.postProcessing.lineSamples.isEmpty, let samples = try? FoamPostResults.lineSamples(in: out.caseDirectory) { showLineSamples(samples) }
+        for r in out.scripts { postScriptResults[(r.outputDirectory.lastPathComponent)] = r }
+        isDirty = true
+    }
+
+    /// Make OpenFOAM results the current solution.
+    private func adoptExternalSolver(_ s: Solution) {
+        s.log = { [weak self] msg in DispatchQueue.main.async { self?.log(msg) } }
+        solver = s
+        post = PostProcessor(solver: s)
+        initialized = true
+        hasResults = true
+        currentIteration = s.iteration
+        flowTime = s.state.time
+        if display.mode == .mesh { display.mode = .contours }
+        refreshDisplay()
+    }
+
+    /// Write the OpenFOAM case without running it.
+    func writeFoamCase() {
+        guard let mesh else { log("No mesh loaded.", .error); return }
+        guard approveFoamContent() else { return }
+        let dir = foamCaseDirectory
+        do {
+            try FoamLocations.validate(dir)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            FoamCasePreparation.clean(dir)
+            let initial = setup.openfoam.initialFields == .fluidcraft
+                ? ((hasResults && initialized) ? solver?.state : try FoamSolve.initialFields(mesh: mesh, setup: setup)) : nil
+            let r = try FoamCaseWriter.write(mesh: mesh, setup: setup, to: dir, initial: initial)
+            for w in r.warnings { log(w, .warning) }
+            foamLastCase = dir
+            log("Wrote \(r.application.rawValue) case (\(r.files.count) files) to \(dir.path). Run ./Allrun there, or Calculate.")
+        } catch { log("\(error)", .error) }
+    }
+
+    /// Read the latest time of the case directory into FluidCraft (e.g. after running Allrun by hand).
+    func loadFoamResults() {
+        guard let mesh else { log("No mesh loaded.", .error); return }
+        let dir = foamCaseDirectory, s = setup
+        let res = residuals, rep = reportHistory
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let (solver, time) = try FoamSolve.load(caseDirectory: dir, mesh: mesh, setup: s)
+                solver.restoreHistory(residuals: res, reports: rep)
+                DispatchQueue.main.async {
+                    self.adoptExternalSolver(solver)
+                    self.foamStatus = "Results loaded from time \(time) in \(dir.path)"
+                    self.log("Loaded OpenFOAM results at time \(time) from \(dir.path).")
+                }
+            } catch {
+                DispatchQueue.main.async { self.log("Could not load OpenFOAM results: \(error)", .error) }
+            }
+        }
+    }
+
+    func cleanFoamCase() {
+        let dir = foamCaseDirectory
+        guard FileManager.default.fileExists(atPath: dir.appendingPathComponent("system/controlDict").path) else {
+            log("\(dir.path) is not an OpenFOAM case.", .warning); return
+        }
+        FoamCasePreparation.clean(dir)
+        log("Removed results, processor directories and logs from \(dir.path).")
+    }
+
+    func revealFoamCase() {
+        let dir = foamCaseDirectory
+        if FileManager.default.fileExists(atPath: dir.path) { NSWorkspace.shared.activateFileViewerSelecting([dir]) }
+        else { log("\(dir.path) does not exist yet — write or run the case first.", .warning) }
+    }
+
+    /// Open the case in ParaView (built-in OpenFOAM reader via a `.foam` stub).
+    func openFoamInParaView() {
+        let dir = foamCaseDirectory
+        let stub = dir.appendingPathComponent("case.foam")
+        guard FileManager.default.fileExists(atPath: dir.appendingPathComponent("system/controlDict").path) else {
+            log("Write or run the OpenFOAM case first.", .warning); return
+        }
+        if !FileManager.default.fileExists(atPath: stub.path) { FileManager.default.createFile(atPath: stub.path, contents: Data()) }
+        guard let app = ExternalTool.paraViewApp else {
+            log("ParaView not found in /Applications — install it from Settings › Tools.", .warning); return
+        }
+        let pv = app.lastPathComponent
+        let cfg = NSWorkspace.OpenConfiguration()
+        NSWorkspace.shared.open([stub], withApplicationAt: app, configuration: cfg) { _, err in
+            if let err { DispatchQueue.main.async { self.log("ParaView: \(err.localizedDescription)", .error) } }
+        }
+        log("Opening \(stub.path) in \(pv)")
+    }
+
+    // MARK: snappyHexMesh
+
+    func meshWithSnappy(_ s: SnappySettings) {
+        guard !isMeshing, !isRunning else { return }
+        isMeshing = true
+        statusText = "snappyHexMesh…"
+        log("Meshing \((s.path as NSString).lastPathComponent) with snappyHexMesh…", .command)
+        let stem = URL(fileURLWithPath: s.path).deletingPathExtension().lastPathComponent
+        let base = foamCaseDirectory
+        let dir = base.deletingLastPathComponent().appendingPathComponent(base.lastPathComponent + "_mesh_" + String(stem.map { $0.isLetter || $0.isNumber ? $0 : "_" }))
+        let setupCopy = setup
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                let env = try FoamLocations.installation(for: setupCopy).resolve()
+                let r = try SnappyMesher.mesh(s, workDir: dir, environment: env, log: { t in
+                    DispatchQueue.main.async { self.log(t.trimmingCharacters(in: .newlines)) }
+                })
+                DispatchQueue.main.async {
+                    self.isMeshing = false
+                    self.statusText = "Ready"
+                    self.log(r.summary)
+                    self.setMesh(r.mesh, source: "snappyHexMesh (\((s.path as NSString).lastPathComponent))")
+                }
+            } catch {
+                DispatchQueue.main.async { self.isMeshing = false; self.statusText = "Ready"; self.log("\(error)", .error) }
+            }
+        }
+    }
+}
